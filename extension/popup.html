@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pokerit Screen Capture</title>
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    }
+    h1 {
+      font-size: 18px;
+      margin-top: 0;
+      margin-bottom: 15px;
+      color: #333;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    .status {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 4px;
+      background-color: #f5f5f5;
+    }
+    .status-label {
+      font-weight: 500;
+      display: inline-block;
+      width: 80px;
+    }
+    .status-value {
+      font-weight: normal;
+    }
+    .status-connected {
+      color: #2e7d32;
+    }
+    .status-disconnected {
+      color: #c62828;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 4px;
+      background-color: #2196f3;
+      color: white;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    button:hover {
+      background-color: #1976d2;
+    }
+    button.stop {
+      background-color: #f44336;
+    }
+    button.stop:hover {
+      background-color: #d32f2f;
+    }
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+    .footer {
+      margin-top: 15px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pokerit Screen Capture</h1>
+  
+  <div class="status">
+    <div>
+      <span class="status-label">Status:</span>
+      <span id="status-value" class="status-value status-disconnected">Disconnected</span>
+    </div>
+    <div>
+      <span class="status-label">Session:</span>
+      <span id="session-id" class="status-value">-</span>
+    </div>
+  </div>
+  
+  <form id="capture-form">
+    <div class="form-group">
+      <label for="session-input">Session ID:</label>
+      <input type="text" id="session-input" placeholder="Leave blank for auto-generated">
+    </div>
+    
+    <div class="form-group">
+      <label for="interval-input">Capture Interval (ms):</label>
+      <input type="number" id="interval-input" min="500" step="500" value="2000">
+    </div>
+    
+    <button type="submit" id="action-button">Start Capture</button>
+  </form>
+  
+  <div class="footer">
+    <p>Connect to the Pokerit web app to view analysis</p>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html> 
