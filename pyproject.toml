@@ -1,0 +1,25 @@
+[project]
+name = "poker-trainer"
+version = "0.1.0"
+description = "Poker webapp using PyPokerEngine for bot players"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pypokerengine",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+]
+
+[tool.uv.sources]
+# Vendored editable fork: we patch its API to expose exact hole cards at
+# showdown (see vendor/PyPokerEngine/pypokerengine/engine/game_evaluator.py).
+pypokerengine = { path = "vendor/PyPokerEngine", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/poker_trainer", "src/poker_engine"]

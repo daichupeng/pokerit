@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: poker
+      POSTGRES_PASSWORD: poker
+      POSTGRES_DB: poker
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poker -d poker"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    image: poker-trainer:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
+    # Mount source for live editing during development. The container's
+    # /app/.venv is kept separate (anonymous volume) so the host's lack of a
+    # Linux venv doesn't shadow the one built in the image.
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - /app/.venv
+    # Port reserved for the FastAPI webapp to be built next.
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:
