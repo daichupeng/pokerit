@@ -234,7 +234,12 @@ class Event:
         return {
                 "type": self.ROUND_FINISH,
                 "round_state": message["round_state"],
-                "winners": [player_info(info) for info in message["winners"]]
+                "winners": [player_info(info) for info in message["winners"]],
+                # PokerTrainer patch: pass hand_info through so callers can record
+                # showdown reveals. hand_info is [] when there is no showdown, and
+                # otherwise contains each showdown participant's exact hole_card
+                # (added by our game_evaluator patch) — preserving hidden info.
+                "hand_info": message.get("hand_info", [])
                 }
 
     @classmethod

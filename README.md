@@ -34,16 +34,47 @@ stock API only exposed rank summaries, which made faithful showdown records
 impossible. The patch only fires at a real showdown, preserving the
 hidden-information rule.
 
-## Docker (recommended)
+## Web app (`poker_trainer/`)
+
+An interactive poker table served by FastAPI with a vanilla-JS single-page UI.
+Bots run server-side via PyPokerEngine's **Emulator** (stepped one action at a
+time); the human plays over a WebSocket. The hidden-information rule is enforced
+end to end — the browser only ever receives the hero's own cards plus opponents'
+cards revealed at showdown.
+
+- `main.py` — FastAPI app: REST setup, WebSocket play, serves the SPA at `/`.
+- `api/auth.py` — login stub (no password yet); `api/games.py` — create game,
+  list games (stub), get state.
+- `game/session.py` — `GameSession` wraps the Emulator and the bot loop;
+  `game/manager.py` — in-memory live games; `game/serialize.py` — browser view.
+- `ws.py` — the play loop (streams events, receives the hero's action).
+- `static/` — SPA: `index.html`, `css/styles.css`, `js/app.js` (router + login/
+  main/create screens), `js/table.js` (table render, bet controls, stats/hands
+  panel). Cards and felt are drawn in CSS — no downloaded assets, works offline.
+
+User journey: **Login** (skippable) → **Main** (create game / review stub) →
+**Create game** (bots, blinds, buy-in; randomize + hide bot styles) → **Table**
+(standard play, slider + input bet controls clamped to the rules) with a
+collapsible **Stats / Hands** panel.
+
+### Run the web app
+
+```bash
+docker compose up -d --build       # starts Postgres + the web app
+docker compose exec app uv run python scripts/init_db.py   # one-time: create schema
+# open http://localhost:8000
+```
+
+## CLI game + Docker (engine layer)
 
 ```bash
 docker compose up -d db                                   # start Postgres
-docker compose run --rm app uv run python scripts/init_db.py        # create schema
+docker compose exec app uv run python scripts/init_db.py  # create schema
 docker compose run --rm app uv run python scripts/play_game.py --auto   # bot-only, recorded
 docker compose exec db psql -U poker -d poker             # inspect records
 ```
 
-Interactive play (human vs bots):
+Interactive console play (human vs bots):
 
 ```bash
 docker compose run --rm app uv run python scripts/play_game.py

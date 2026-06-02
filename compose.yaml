@@ -23,6 +23,10 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
+    # Run the web app with hot-reload for development.
+    command: >
+      uv run uvicorn poker_trainer.main:app
+      --host 0.0.0.0 --port 8000 --reload --app-dir src
     # Mount source for live editing during development. The container's
     # /app/.venv is kept separate (anonymous volume) so the host's lack of a
     # Linux venv doesn't shadow the one built in the image.
@@ -30,7 +34,6 @@ services:
       - ./src:/app/src
       - ./scripts:/app/scripts
       - /app/.venv
-    # Port reserved for the FastAPI webapp to be built next.
     ports:
       - "8000:8000"
 

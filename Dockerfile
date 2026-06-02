@@ -29,6 +29,6 @@ COPY scripts ./scripts
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
-# Default: run the bot-vs-bot smoke test. The webapp will override this
-# (e.g. `uvicorn poker_trainer.main:app`) once it exists.
-CMD ["python", "scripts/play_bots.py"]
+# Default: serve the web app. (Override with a script command to run a CLI game.)
+ENV PYTHONPATH=/app/src
+CMD ["uvicorn", "poker_trainer.main:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]

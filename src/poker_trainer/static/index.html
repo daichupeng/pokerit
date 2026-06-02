@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Poker Trainer</title>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- ===== Screen templates (cloned by the router) ===== -->
+
+  <template id="screen-login">
+    <section class="screen center">
+      <div class="card-panel">
+        <h1 class="brand">♠ Poker Trainer</h1>
+        <p class="muted">Sign in to track your sessions — or jump straight in.</p>
+        <label>Display name
+          <input id="login-name" type="text" placeholder="e.g. Phil" />
+        </label>
+        <label>Email <span class="muted">(optional)</span>
+          <input id="login-email" type="email" placeholder="you@example.com" />
+        </label>
+        <div class="row">
+          <button id="login-continue" class="btn primary">Continue</button>
+          <button id="login-skip" class="btn ghost">Skip — play as guest</button>
+        </div>
+        <p class="tiny muted">Login is a placeholder for now; no password required.</p>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-main">
+    <section class="screen">
+      <header class="topbar">
+        <h1 class="brand small">♠ Poker Trainer</h1>
+        <div class="profile-chip">
+          <span id="profile-name">Guest</span>
+          <button class="btn tiny ghost" disabled title="Coming soon">Edit profile</button>
+        </div>
+      </header>
+      <div class="main-body">
+        <div class="hero-actions">
+          <button id="go-create" class="btn primary big">+ Create new game</button>
+        </div>
+        <div class="card-panel">
+          <h2>Previous games</h2>
+          <div id="games-list" class="games-list">
+            <p class="muted">Loading…</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-create">
+    <section class="screen">
+      <header class="topbar">
+        <h1 class="brand small">♠ New game</h1>
+        <button id="create-back" class="btn ghost tiny">← Back</button>
+      </header>
+      <div class="main-body">
+        <div class="card-panel form-grid">
+          <label>Bot players
+            <input id="cfg-bots" type="number" min="1" max="8" value="8" />
+          </label>
+          <label>Buy-in
+            <input id="cfg-buyin" type="number" min="1" value="10000" />
+          </label>
+          <label>Small blind
+            <input id="cfg-sb" type="number" min="1" value="50" />
+          </label>
+          <label>Big blind
+            <input id="cfg-bb" type="number" min="2" value="100" />
+          </label>
+          <label>Max hands
+            <input id="cfg-rounds" type="number" min="1" max="500" value="50" />
+          </label>
+          <div class="toggles">
+            <label class="toggle">
+              <input id="cfg-random" type="checkbox" checked /> Randomize bot styles
+            </label>
+            <label class="toggle">
+              <input id="cfg-hide" type="checkbox" checked /> Hide bot styles
+            </label>
+          </div>
+          <div id="styles-picker" class="styles-picker hidden">
+            <p class="muted tiny">Choose a style per bot (used when not randomizing):</p>
+            <div id="styles-rows"></div>
+          </div>
+          <div class="quick-config">
+            <div class="quick-config-head">
+              <span>Pre-flop quick bets <span class="muted tiny">(× big blind, up to 5)</span></span>
+              <button id="preflop-add" type="button" class="btn tiny ghost">+ Add</button>
+            </div>
+            <div id="preflop-rows" class="quick-chips"></div>
+          </div>
+          <div class="quick-config">
+            <div class="quick-config-head">
+              <span>Post-flop quick bets <span class="muted tiny">(% pot, up to 5)</span></span>
+              <button id="postflop-add" type="button" class="btn tiny ghost">+ Add</button>
+            </div>
+            <div id="postflop-rows" class="quick-chips"></div>
+          </div>
+          <div class="row">
+            <button id="create-start" class="btn primary big">Start game</button>
+          </div>
+          <p id="create-error" class="error hidden"></p>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-table">
+    <section class="screen table-screen">
+      <header class="topbar">
+        <h1 class="brand small">♠ Poker Trainer</h1>
+        <div class="table-meta">
+          <span id="table-blinds"></span>
+          <span id="table-hand"></span>
+          <button id="leave-game" class="btn ghost tiny">Leave</button>
+          <button id="toggle-panel" class="btn ghost tiny">Stats ▸</button>
+        </div>
+      </header>
+
+      <div class="table-layout">
+        <div class="felt-wrap">
+          <div id="felt" class="felt">
+            <div id="community" class="community"></div>
+            <div id="pot" class="pot"></div>
+            <div id="seats" class="seats"></div>
+            <div id="message" class="table-message"></div>
+          </div>
+
+          <div id="controls" class="controls hidden">
+            <div class="bet-row">
+              <input id="bet-slider" type="range" min="0" max="0" value="0" disabled />
+              <input id="bet-input" type="number" min="0" max="0" value="0" disabled />
+            </div>
+            <div id="quick-row" class="quick-row">
+              <!-- Quick-bet buttons are rendered from per-game presets by table.js,
+                   with All-in always appended. -->
+            </div>
+            <div class="action-row">
+              <button id="btn-fold" class="btn danger" disabled>Fold</button>
+              <button id="btn-call" class="btn primary" disabled>Call</button>
+              <button id="btn-raise" class="btn warn" disabled>Raise</button>
+            </div>
+          </div>
+        </div>
+
+        <aside id="side-panel" class="side-panel hidden">
+          <div class="tabs">
+            <button class="tab active" data-tab="stats">Stats</button>
+            <button class="tab" data-tab="hands">Hands</button>
+          </div>
+          <div id="tab-stats" class="tab-body"></div>
+          <div id="tab-hands" class="tab-body hidden"></div>
+        </aside>
+      </div>
+    </section>
+  </template>
+
+  <script src="/static/js/table.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -82,6 +82,21 @@ class PerspectiveRecorder:
         self._hands: list[_HandRecord] = []
         self._current: _HandRecord | None = None
 
+    # -- live accessors -----------------------------------------------------
+
+    def last_showdown_reveals(self, exclude_uuid: str | None = None) -> dict[str, list[str]]:
+        """Exact hole cards revealed at the most recently finished hand.
+
+        Populated from the (patched) ``hand_info`` of the round-result message,
+        so it contains only seats that reached showdown. Pass the hero uuid to
+        ``exclude_uuid`` to omit the hero (the UI shows the hero separately).
+        Returns ``{}`` when the last hand had no showdown.
+        """
+        if not self._hands:
+            return {}
+        reveals = self._hands[-1].revealed_cards
+        return {u: list(c) for u, c in reveals.items() if u != exclude_uuid}
+
     # -- attachment ---------------------------------------------------------
 
     def attach(self, player) -> None:

@@ -37,6 +37,7 @@ class SeatSpec:
     kind: SeatKind
     params: dict[str, float] = field(default_factory=dict)
     email: str | None = None  # only meaningful for the human seat
+    hidden: bool = False  # if True, a bot's style is not revealed to the UI
 
     @property
     def is_bot(self) -> bool:
