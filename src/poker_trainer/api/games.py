@@ -6,10 +6,13 @@ import random
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
+from poker_engine import hand_eval
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
-from poker_engine.db.models import User
-from poker_trainer.auth.deps import require_user
+from poker_engine.db.models import Game, GamePlayer, Hand, User
+from poker_trainer.auth.deps import get_db, require_user
 from poker_trainer.game.manager import manager
 from poker_trainer.game.session import GameSession
 
@@ -70,7 +73,11 @@ class CreateGameResponse(BaseModel):
 
 class GameSummary(BaseModel):
     game_id: str
-    created_at: str | None = None
+    started_at: str | None = None
+    small_blind: int
+    big_blind: int
+    num_hands: int
+    hero_net: int  # the hero seat's net chips across the game
 
 
 def _build_seats(req: CreateGameRequest, hero: User) -> list[SeatSpec]:
@@ -133,11 +140,295 @@ def create_game(req: CreateGameRequest, hero: User = Depends(require_user)) -> C
     )
 
 
+# Engine streets in display order; SHOWDOWN actions (if any) are folded into the
+# last betting street for display purposes.
+_STREET_ORDER = ["preflop", "flop", "turn", "river"]
+
+
+def _hero_seat(game: Game) -> GamePlayer | None:
+    """The hero's seat in a game — the one non-bot seat linked to a user."""
+    for gp in game.players:
+        if not gp.is_bot and gp.user_id is not None:
+            return gp
+    return None
+
+
+def _load_owned_game(db: Session, game_id: str, user: User) -> Game:
+    """Fetch a game with hands/players eager-loaded, 404 unless owned by user."""
+    try:
+        game = db.execute(
+            select(Game)
+            .where(Game.id == game_id)
+            .options(
+                selectinload(Game.players),
+                selectinload(Game.hands),
+            )
+        ).scalar_one_or_none()
+    except Exception:  # malformed UUID etc.
+        game = None
+    if game is None or game.hero_user_id != user.id:
+        raise HTTPException(404, "Game not found.")
+    return game
+
+
 @router.get("/games", response_model=list[GameSummary])
-def list_games() -> list[GameSummary]:
-    # Review-games is a later phase; return an empty list for now so the main
-    # page can render its "no games yet" state.
-    return []
+def list_games(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> list[GameSummary]:
+    games = (
+        db.execute(
+            select(Game)
+            .where(Game.hero_user_id == user.id)
+            .options(selectinload(Game.players), selectinload(Game.hands))
+            .order_by(Game.started_at.desc().nullslast(), Game.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    out: list[GameSummary] = []
+    for game in games:
+        hero = _hero_seat(game)
+        out.append(
+            GameSummary(
+                game_id=str(game.id),
+                started_at=game.started_at.isoformat() if game.started_at else None,
+                small_blind=game.small_blind,
+                big_blind=game.big_blind,
+                num_hands=len(game.hands),
+                hero_net=hero.total_winnings if hero else 0,
+            )
+        )
+    return out
+
+
+@router.get("/games/{game_id}/hands")
+def list_hands(
+    game_id: str,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    game = _load_owned_game(db, game_id, user)
+    hero = _hero_seat(game)
+    hero_gp_id = hero.id if hero else None
+
+    hands = sorted(game.hands, key=lambda h: h.round_count)
+    rows = []
+    for hand in hands:
+        # Hero's result for this hand, if the hero was dealt in.
+        hero_won = False
+        hero_amount = 0
+        for hp in hand.players:
+            if hp.game_player_id == hero_gp_id:
+                hero_won = hp.is_winner
+                hero_amount = hp.amount_won
+                break
+        rows.append({
+            "round_count": hand.round_count,
+            "street_reached": hand.street_reached.value,
+            "board": list(hand.board or []),
+            "pot_total": hand.pot_total,
+            "had_showdown": hand.had_showdown,
+            "hero_won": hero_won,
+            "hero_amount": hero_amount,
+        })
+
+    return {
+        "game_id": str(game.id),
+        "small_blind": game.small_blind,
+        "big_blind": game.big_blind,
+        "started_at": game.started_at.isoformat() if game.started_at else None,
+        "hands": rows,
+    }
+
+
+@router.get("/games/{game_id}/hands/{round_count}")
+def hand_detail(
+    game_id: str,
+    round_count: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    game = _load_owned_game(db, game_id, user)
+    hero = _hero_seat(game)
+    hero_gp_id = hero.id if hero else None
+
+    hand = db.execute(
+        select(Hand)
+        .where(Hand.game_id == game.id, Hand.round_count == round_count)
+        .options(
+            selectinload(Hand.players),
+            selectinload(Hand.actions),
+        )
+    ).scalar_one_or_none()
+    if hand is None:
+        raise HTTPException(404, "Hand not found.")
+
+    # game_player_id -> seat metadata, for naming actions/players.
+    seat_by_gp = {gp.id: gp for gp in game.players}
+
+    def name_of(gp_id) -> str:
+        gp = seat_by_gp.get(gp_id)
+        return gp.display_name if gp else "?"
+
+    # Players' hands, in seat order. hole_cards is None unless known to the hero.
+    players = []
+    for hp in sorted(
+        hand.players,
+        key=lambda h: (seat_by_gp.get(h.game_player_id).seat_index
+                       if seat_by_gp.get(h.game_player_id) else 99),
+    ):
+        gp = seat_by_gp.get(hp.game_player_id)
+        players.append({
+            "name": gp.display_name if gp else "?",
+            "is_hero": hp.game_player_id == hero_gp_id,
+            "hole_cards": list(hp.hole_cards) if hp.hole_cards else None,
+            "is_winner": hp.is_winner,
+            "amount_won": hp.amount_won,
+        })
+
+    # Per-player starting stack at hand start (keyed by game_player_id).
+    start_stack: dict = {}
+    for hp in hand.players:
+        if hp.starting_stack is not None:
+            start_stack[hp.game_player_id] = hp.starting_stack
+
+    # PyPokerEngine stores action amounts as the *cumulative total* a player has
+    # committed on that street (not the incremental size of that action). Track
+    # the last-seen cumulative total per player so we can compute the delta for
+    # stack accounting and detect all-ins correctly.
+    #
+    # cumulative_committed[gp_id] = total chips this player has put in across
+    # all streets so far (updated at each street boundary and after each action).
+    cumulative_committed: dict = {gp_id: 0 for gp_id in start_stack}
+    streets_out: dict[str, dict] = {}
+    actions_sorted = sorted(hand.actions, key=lambda a: a.seq)
+
+    # Group actions by street first, preserving order.
+    raw_streets: dict[str, list] = {s: [] for s in _STREET_ORDER}
+    for act in actions_sorted:
+        bucket = act.street.value if act.street.value in raw_streets else "river"
+        raw_streets[bucket].append(act)
+
+    board = list(hand.board or [])
+    board_by_street = {
+        "preflop": [],
+        "flop": board[:3],
+        "turn": board[:4],
+        "river": board[:5],
+    }
+
+    for st in _STREET_ORDER:
+        acts = raw_streets[st]
+        st_board = board_by_street[st]
+
+        # Emit a street block whenever there are actions OR community cards
+        # (all-in runouts have cards dealt but no betting actions).
+        if not acts and not st_board:
+            continue
+
+        # Pot at start of this street = sum of all committed chips so far.
+        pot_start = sum(cumulative_committed.values())
+
+        # Per-player stack at the start of this street.
+        stacks_at_street = {
+            gp_id: max(0, start_stack.get(gp_id, 0) - cumulative_committed.get(gp_id, 0))
+            for gp_id in start_stack
+        }
+
+        pot_info: dict = {"main": pot_start, "side": []}
+
+        # Per-street committed tally (resets each street) for delta calculation.
+        street_committed_prev: dict = {gp_id: 0 for gp_id in start_stack}
+
+        action_rows = []
+        for act in acts:
+            gp_id = act.game_player_id
+            amt = act.amount or 0
+
+            if act.action in ("raise", "call", "smallblind", "bigblind", "ante") and amt > 0:
+                # amt is the cumulative total this player has put in THIS STREET.
+                prev = street_committed_prev.get(gp_id, 0)
+                delta = max(0, amt - prev)
+                street_committed_prev[gp_id] = amt
+                stacks_at_street[gp_id] = max(0, stacks_at_street[gp_id] - delta)
+                cumulative_committed[gp_id] = cumulative_committed.get(gp_id, 0) + delta
+
+                # All-in: player's stack reaches zero after this action.
+                is_allin = (
+                    act.action in ("raise", "call")
+                    and delta > 0
+                    and stacks_at_street[gp_id] == 0
+                )
+            else:
+                is_allin = False
+
+            action_rows.append({
+                "name": name_of(gp_id),
+                "is_hero": gp_id == hero_gp_id,
+                "action": act.action,
+                "amount": amt,
+                "is_allin": is_allin,
+            })
+
+        # Player stacks at start of this street (skip busted/absent seats).
+        player_stacks = [
+            {"name": name_of(gp_id), "stack": stk, "is_hero": gp_id == hero_gp_id}
+            for gp_id, stk in stacks_at_street.items()
+            if start_stack.get(gp_id, 0) > 0
+        ]
+
+        streets_out[st] = {
+            "actions": action_rows,
+            "pot": pot_info,
+            "board": st_board,
+            "player_stacks": player_stacks,
+        }
+
+    # Final pot structure from stored hand.pot (has accurate side pots).
+    final_pot = hand.pot or {"main": {"amount": hand.pot_total}, "side": []}
+
+    winners = [
+        {"name": p["name"], "is_hero": p["is_hero"], "amount_won": p["amount_won"]}
+        for p in players if p["is_winner"] and p["amount_won"] > 0
+    ]
+
+    # Hand values at showdown for all revealed players.
+    showdown_hands = []
+    if hand.had_showdown:
+        for hp in hand.players:
+            if not hp.hole_cards or not hp.revealed:
+                continue
+            gp = seat_by_gp.get(hp.game_player_id)
+            name = gp.display_name if gp else "?"
+            is_hero = hp.game_player_id == hero_gp_id
+            try:
+                best = hand_eval.best_five(list(hp.hole_cards), board)
+                label = best.get("label", "")
+            except Exception:
+                label = ""
+            showdown_hands.append({
+                "name": name,
+                "is_hero": is_hero,
+                "hole_cards": list(hp.hole_cards),
+                "hand_label": label,
+                "is_winner": hp.is_winner,
+                "amount_won": hp.amount_won,
+            })
+
+    return {
+        "game_id": str(game.id),
+        "round_count": hand.round_count,
+        "street_reached": hand.street_reached.value,
+        "board": board,
+        "pot_total": hand.pot_total,
+        "final_pot": final_pot,
+        "had_showdown": hand.had_showdown,
+        "players": players,
+        "streets": streets_out,
+        "winners": winners,
+        "showdown_hands": showdown_hands,
+    }
 
 
 @router.get("/games/{game_id}/state")

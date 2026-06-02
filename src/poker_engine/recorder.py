@@ -81,6 +81,10 @@ class PerspectiveRecorder:
         self._seats: list[dict] = []  # game-start seat order: {name, uuid, stack}
         self._hands: list[_HandRecord] = []
         self._current: _HandRecord | None = None
+        # Incremental persistence state (used by ``flush_incremental``). The
+        # one-shot ``flush`` ignores these.
+        self._game_id = None
+        self._persisted_rounds: set[int] = set()
 
     # -- live accessors -----------------------------------------------------
 
@@ -225,9 +229,28 @@ class PerspectiveRecorder:
             for hand in self._hands:
                 hand.revealed_cards.setdefault(hero_engine_uuid, list(hand.hero_hole))
 
-        seat_specs = {spec.name: spec for spec in config.seats}
         hero_user = self._upsert_hero_user(session, config)
+        game, gp_by_uuid = self._create_game_and_seats(
+            session, config, hero_user, bot_params_by_uuid, started_at, ended_at
+        )
 
+        # Per-hand rows.
+        for hand_rec in self._hands:
+            self._persist_hand(session, game, hand_rec, gp_by_uuid)
+
+        self._accumulate_stats(gp_by_uuid)
+        session.commit()
+        return game
+
+    def _create_game_and_seats(
+        self, session, config, hero_user, bot_params_by_uuid, started_at, ended_at
+    ) -> tuple[Game, dict[str, GamePlayer]]:
+        """Create the Game row and one GamePlayer per seat (game-start order).
+
+        Shared by ``flush`` and ``flush_incremental``. Adds rows to the session
+        but does not commit.
+        """
+        seat_specs = {spec.name: spec for spec in config.seats}
         game = Game(
             started_at=started_at,
             ended_at=ended_at,
@@ -247,7 +270,6 @@ class PerspectiveRecorder:
         )
         session.add(game)
 
-        # game_players: one row per seat, in game-start order.
         gp_by_uuid: dict[str, GamePlayer] = {}
         for index, seat in enumerate(self._seats):
             spec = seat_specs.get(seat["name"])
@@ -273,12 +295,74 @@ class PerspectiveRecorder:
             )
             gp_by_uuid[seat["uuid"]] = gp
             session.add(gp)
+        return game, gp_by_uuid
 
-        # Per-hand rows.
-        for hand_rec in self._hands:
+    def flush_incremental(
+        self,
+        session,
+        config: GameConfig,
+        hero_engine_uuid: str | None,
+        bot_params_by_uuid: dict[str, dict] | None = None,
+        started_at: datetime | None = None,
+        ended_at: datetime | None = None,
+    ):
+        """Persist progressively: create the game once, then append new hands.
+
+        Idempotent and safe to call repeatedly. On the first call it creates the
+        ``Game`` and ``GamePlayer`` rows; every call writes only hands whose
+        ``round_count`` has not been persisted yet and recomputes per-seat
+        aggregate stats from all buffered hands. Each call runs in its own
+        session, so ORM rows are always re-resolved by id rather than cached
+        across sessions.
+        """
+        bot_params_by_uuid = bot_params_by_uuid or {}
+        if hero_engine_uuid:
+            self._hero_uuid = hero_engine_uuid
+            for hand in self._hands:
+                hand.revealed_cards.setdefault(hero_engine_uuid, list(hand.hero_hole))
+
+        if self._game_id is None:
+            hero_user = self._upsert_hero_user(session, config)
+            game, gp_by_uuid = self._create_game_and_seats(
+                session, config, hero_user, bot_params_by_uuid, started_at, ended_at
+            )
+            session.flush()  # assign PKs
+            self._game_id = game.id
+        else:
+            game = session.get(Game, self._game_id)
+            # Re-resolve seats by id within this live session (the cached ORM
+            # objects from a prior call are detached now).
+            gp_by_uuid = {
+                gp.engine_uuid: gp
+                for gp in session.query(GamePlayer).filter_by(game_id=self._game_id)
+            }
+            if ended_at is not None:
+                game.ended_at = ended_at
+
+        # Persist only *completed* hands. ``self._current`` is the hand still in
+        # progress (recorded at round start, but its board/actions/winners are
+        # not filled in until ``_record_round_result``). Writing it now would
+        # persist an empty shell and, via the round dedup below, prevent its real
+        # contents from ever being saved.
+        completed = [h for h in self._hands if h is not self._current]
+
+        # Append hands not yet written.
+        for hand_rec in completed:
+            if hand_rec.round_count in self._persisted_rounds:
+                continue
             self._persist_hand(session, game, hand_rec, gp_by_uuid)
+            self._persisted_rounds.add(hand_rec.round_count)
 
-        self._accumulate_stats(gp_by_uuid)
+        # Recompute aggregate stats + final stacks from all completed hands.
+        for gp in gp_by_uuid.values():
+            gp.hands_played = 0
+            gp.hands_won = 0
+            gp.total_winnings = 0
+            gp.vpip_count = 0
+            gp.pfr_count = 0
+            gp.final_stack = self._final_stack(gp.engine_uuid)
+        self._accumulate_stats(gp_by_uuid, hands=completed)
+
         session.commit()
         return game
 
@@ -331,9 +415,10 @@ class PerspectiveRecorder:
                 )
             )
 
-    def _accumulate_stats(self, gp_by_uuid):
+    def _accumulate_stats(self, gp_by_uuid, hands=None):
+        hands = self._hands if hands is None else hands
         for uuid_, gp in gp_by_uuid.items():
-            for hand_rec in self._hands:
+            for hand_rec in hands:
                 if uuid_ not in hand_rec.starting_stacks:
                     continue
                 gp.hands_played += 1
@@ -367,9 +452,13 @@ class PerspectiveRecorder:
         return user
 
     def _final_stack(self, uuid_: str) -> int | None:
-        if not self._hands:
-            return None
-        return self._hands[-1].final_stacks.get(uuid_)
+        # Use the most recent hand that actually has final stacks recorded. The
+        # in-progress hand (during incremental saves) has an empty
+        # ``final_stacks``, so skip it and fall back to the last completed hand.
+        for hand_rec in reversed(self._hands):
+            if hand_rec.final_stacks:
+                return hand_rec.final_stacks.get(uuid_)
+        return None
 
 
 def _street(name) -> Street:

@@ -201,6 +201,11 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   border-color: #16243f;
 }
 .pcard.placeholder { background: rgba(255,255,255,.06); border: 1px dashed #3a4a5a; box-shadow: none; }
+/* Empty community-card slot: a grey-outlined box before the card is dealt. */
+.pcard.slot { background: rgba(255,255,255,.04); border: 2px dashed rgba(255,255,255,.22);
+  box-shadow: none; }
+/* Separate the flop (first 3) from the turn and river. */
+.community .pcard.gap-before { margin-left: 26px; }
 /* Cards not part of the winner's best five are faded at showdown. */
 .pcard.dimmed { opacity: .32; filter: grayscale(.7); transition: opacity .3s, filter .3s; }
 
@@ -245,3 +250,85 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
 .hand-entry .board { display: flex; gap: 3px; margin: 4px 0; }
 .win { color: #5fbf6f; }
 .lose { color: var(--muted); }
+.loss { color: var(--danger); }
+
+/* ---------- game history ---------- */
+.hero-actions .btn + .btn { margin-top: 0.6rem; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; }
+
+/* Clickable rows in the games / hands lists. */
+.list-row {
+  display: flex; align-items: center; gap: 0.8rem; width: 100%; text-align: left;
+  background: var(--bg); border: 1px solid #2a323d; border-radius: 10px;
+  padding: 0.65rem 0.85rem; color: var(--text); cursor: pointer;
+  font-size: 0.95rem; transition: border-color .15s, background .15s;
+}
+.list-row:hover { border-color: var(--gold); background: var(--panel-2); }
+.list-row.active { border-color: var(--gold); background: var(--panel-2); }
+.list-row .lr-main { font-weight: 600; }
+.list-row .lr-meta { flex: 1; }
+.list-row .lr-net { font-weight: 700; white-space: nowrap; }
+
+/* Inline suit glyphs for text-based card display. */
+.suit-red { color: var(--red); font-weight: 700; }
+.suit-black { color: var(--text); font-weight: 700; }
+
+/* ---------- split-pane game/hands screen ---------- */
+.screen.hands-screen { height: 100%; }
+.hands-split {
+  display: flex; flex: 1; min-height: 0; overflow: hidden; height: 0;
+}
+.hands-sidebar {
+  width: 280px; flex-shrink: 0; overflow-y: auto;
+  border-right: 1px solid #222a33; padding: 0.75rem;
+  display: flex; flex-direction: column; gap: 0.4rem;
+}
+.hands-detail-pane {
+  flex: 1; overflow-y: auto; padding: 0;
+}
+
+/* Hand detail: street blocks with headings and action lines. */
+.hand-detail { padding: 0.5rem 1.25rem 1.5rem; }
+.hand-detail-header { padding: 0.75rem 0 0.5rem; border-bottom: 1px solid #232a34; margin-bottom: 0.25rem; }
+.hand-detail-header h3 { margin: 0; font-size: 1rem; color: var(--gold); }
+.hand-detail .street { padding: 0.6rem 0; border-bottom: 1px solid #232a34; }
+.hand-detail .street:last-child { border-bottom: none; }
+.hand-detail h3 {
+  margin: 0 0 0.4rem; font-size: 0.9rem; color: var(--gold);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.hand-detail .board-line { font-size: 1.25rem; margin: 0.2rem 0 0.4rem; letter-spacing: 1px; }
+.hand-detail .action-list, .hand-detail .hand-players {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem;
+}
+.hand-detail .action-list li { color: var(--text); font-size: 0.9rem; }
+.hand-detail .hand-players li { font-size: 0.95rem; line-height: 1.6; }
+.hand-detail .pname { color: var(--muted); }
+.hand-detail .pname.hero { color: var(--gold); font-weight: 700; }
+
+/* Per-street pot and stack context. */
+.street-pot { font-size: 0.8rem; margin: 0.2rem 0 0.3rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.pot-main { color: var(--text); font-weight: 600; }
+.pot-side { color: var(--muted); }
+.street-stacks {
+  display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem;
+  margin: 0.15rem 0 0.4rem; font-size: 0.78rem;
+}
+.stack-chip {
+  background: var(--bg); border: 1px solid #2a323d; border-radius: 6px;
+  padding: 0.1rem 0.4rem; color: var(--muted);
+}
+.stack-chip.hero { border-color: var(--gold); color: var(--gold); }
+
+/* All-in tag inline in action lines. */
+.tag-allin {
+  display: inline-block; font-size: 0.7rem; font-weight: 800;
+  background: var(--danger); color: #fff; border-radius: 4px;
+  padding: 0 0.3rem; vertical-align: middle; letter-spacing: .5px;
+}
+
+/* Showdown hand label. */
+.hand-label { color: var(--muted); font-size: 0.85rem; font-style: italic; margin-left: 0.4rem; }
+.showdown-list li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.3rem; }
+.pot-summary { margin-top: 0.5rem; }
+.result-line { font-size: 0.95rem; font-weight: 600; }

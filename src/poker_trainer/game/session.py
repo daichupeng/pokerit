@@ -296,10 +296,9 @@ class GameSession:
 
     # -- persistence --------------------------------------------------------
 
-    def persist(self, session) -> object | None:
-        """Persist the finished game via the PerspectiveRecorder."""
-        ended_at = datetime.now().astimezone()
-        game = self.recorder.flush(
+    def _flush(self, session, ended_at: datetime | None) -> object:
+        """Incrementally persist the game so far; idempotent across calls."""
+        return self.recorder.flush_incremental(
             session,
             self.config,
             hero_engine_uuid=self.hero_uuid,
@@ -307,4 +306,22 @@ class GameSession:
             started_at=self.started_at,
             ended_at=ended_at,
         )
-        return game
+
+    def persist_start(self, session) -> object:
+        """Create the Game row at game start (no hands yet, ended_at unset)."""
+        return self._flush(session, ended_at=None)
+
+    def persist_incremental(self, session) -> object:
+        """Append any newly-finished hands and refresh stats.
+
+        Sets ``ended_at`` only once the game has finished so a still-running
+        game keeps a NULL ``ended_at`` in history.
+        """
+        ended_at = datetime.now().astimezone() if self.finished else None
+        return self._flush(session, ended_at=ended_at)
+
+    def persist(self, session) -> object | None:
+        """Final persist of the finished game. Idempotent with the per-hand
+        incremental saves (re-runs the dedup'd incremental flush)."""
+        ended_at = datetime.now().astimezone()
+        return self._flush(session, ended_at=ended_at)

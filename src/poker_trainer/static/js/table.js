@@ -76,6 +76,7 @@
       this.preflopQuick = [];   // [N, ...] big-blind multiples
       this.postflopQuick = [];  // [N, ...] pot percentages
       this.street = "preflop";  // current street, drives which presets show
+      this.myTurn = false;      // true only between a hero ask and the hero acting
       this.stats = {};         // uuid -> {name, played, won, net}
       this.hands = [];         // completed hand summaries
       this.bind();
@@ -148,12 +149,14 @@
     onEvent(ev) {
       switch (ev.type) {
         case "to_act":
+          this.disableControls();  // someone else is acting — lock the buttons
           if (ev.view) this.render(ev.view, ev.uuid);
           break;
         case "new_street":
           this.showdown = null; this.winnerUuids = null;  // clear prior showdown
-          if (ev.view) this.render(ev.view);
-          this.setMessage(cap(ev.street));
+          // Collect the final bets that are currently shown in front of players,
+          // slide them into the pot, then reveal the new street's view/card.
+          this.collectBetsThenRender(ev);
           break;
         case "round_finish":
           // Stash showdown info so render() can show hand labels and dim the
@@ -181,6 +184,7 @@
     onAsk(ask) {
       this.showdown = null; this.winnerUuids = null;  // new betting view, no showdown
       this.validActions = ask.valid_actions;
+      this.myTurn = true;  // only now may the player act
       if (ask.view) this.render(ask.view, this.heroUuid);
       this.enableControls(ask.valid_actions);
       // The glowing seat highlight already signals the hero's turn; no banner.
@@ -208,12 +212,25 @@
       });
       const showdownActive = Object.keys(sd).length > 0 && winners.size > 0;
 
-      // community
+      // community — five fixed slots so the board has a stable position; each
+      // slot is a grey-outlined placeholder until its card is dealt.
+      const board = view.community_card || [];
       this.$community.innerHTML = "";
-      (view.community_card || []).forEach((c) => {
-        const dim = showdownActive && !brightBoard.has(c);
-        this.$community.appendChild(cardEl(c, { lg: true, dimmed: dim }));
-      });
+      for (let i = 0; i < 5; i++) {
+        const c = board[i];
+        let cardNode;
+        if (c) {
+          const dim = showdownActive && !brightBoard.has(c);
+          cardNode = cardEl(c, { lg: true, dimmed: dim });
+        } else {
+          cardNode = document.createElement("div");
+          cardNode.className = "pcard lg slot";
+        }
+        // Extra gap before the 4th card (turn) to separate the flop from the
+        // turn and river.
+        if (i === 3) cardNode.classList.add("gap-before");
+        this.$community.appendChild(cardNode);
+      }
 
       // pot — show the main pot and each side pot separately.
       const mainAmt = (view.pot && view.pot.main && view.pot.main.amount) || 0;
@@ -294,6 +311,32 @@
           this.$seats.appendChild(bet);
         }
       });
+    }
+
+    // End of a street: the bet chips currently shown in front of the players
+    // slide into the pot, then the new street's view (with its new card) renders.
+    collectBetsThenRender(ev) {
+      const chips = Array.from(this.$seats.querySelectorAll(".bet-chip"));
+      if (!chips.length) {
+        if (ev.view) this.render(ev.view);
+        this.setMessage(cap(ev.street));
+        return;
+      }
+      const SLIDE_MS = 500;
+      // Slide every bet chip to the pot location (40% down, centered).
+      chips.forEach((chip) => {
+        chip.style.transition = `left ${SLIDE_MS}ms ease-in, top ${SLIDE_MS}ms ease-in, opacity ${SLIDE_MS}ms`;
+        requestAnimationFrame(() => {
+          chip.style.left = "50%";
+          chip.style.top = "40%";
+          chip.style.opacity = "0.2";
+        });
+      });
+      // After they land, render the new street (clears the chips, adds the card).
+      setTimeout(() => {
+        if (ev.view) this.render(ev.view);
+        this.setMessage(cap(ev.street));
+      }, SLIDE_MS + 60);
     }
 
     revealShowdown(revealed) {
@@ -447,11 +490,14 @@
     }
 
     disableControls() {
+      this.myTurn = false;
       [this.$fold, this.$call, this.$raise, this.$slider, this.$input].forEach((e) => (e.disabled = true));
       this.$quickRow.querySelectorAll("button").forEach((b) => (b.disabled = true));
     }
 
     send(action, amount) {
+      // Guard: ignore any action unless it is actually the player's turn.
+      if (!this.myTurn) return;
       if (!this.ws || this.ws.readyState !== 1) return;
       this.disableControls();
       this.ws.send(JSON.stringify({ type: "action", action, amount: amount || 0 }));

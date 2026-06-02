@@ -42,9 +42,13 @@
       <div class="main-body">
         <div class="hero-actions">
           <button id="go-create" class="btn primary big">+ Create new game</button>
+          <button id="go-history" class="btn ghost big">Game history</button>
         </div>
         <div class="card-panel">
-          <h2>Previous games</h2>
+          <div class="panel-head">
+            <h2>Recent games</h2>
+            <button id="see-all-history" class="btn ghost tiny">See all →</button>
+          </div>
           <div id="games-list" class="games-list">
             <p class="muted">Loading…</p>
           </div>
@@ -154,6 +158,45 @@
           <div class="row">
             <button id="pf-save" class="btn primary">Save changes</button>
             <button id="pf-delete" class="btn danger ghost">Delete account</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-history">
+    <section class="screen">
+      <header class="topbar">
+        <h1 class="brand small">♠ Game history</h1>
+        <button id="history-back" class="btn ghost tiny">← Back</button>
+      </header>
+      <div class="main-body">
+        <div class="card-panel">
+          <h2>Your games</h2>
+          <div id="history-list" class="games-list">
+            <p class="muted">Loading…</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-game-hands">
+    <section class="screen hands-screen">
+      <header class="topbar">
+        <h1 class="brand small">♠ Game</h1>
+        <button id="hands-back" class="btn ghost tiny">← Back</button>
+        <span id="hands-summary" class="muted tiny"></span>
+      </header>
+      <div class="hands-split">
+        <div class="hands-sidebar">
+          <div id="hands-list" class="games-list">
+            <p class="muted">Loading…</p>
+          </div>
+        </div>
+        <div class="hands-detail-pane">
+          <div id="hand-detail" class="hand-detail">
+            <p class="muted" style="padding:1.5rem">Select a hand to view details.</p>
           </div>
         </div>
       </div>

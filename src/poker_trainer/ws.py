@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -10,9 +11,38 @@ from poker_engine.db.base import SessionLocal
 from poker_trainer.game.manager import manager
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 # Delay between streamed events so bot actions animate sequentially in the UI.
 EVENT_DELAY_S = 0.45
+
+
+def _ended_a_hand(events: list[dict]) -> bool:
+    """True if a streamed batch contained a finished hand (a round_finish)."""
+    return any(e.get("type") == "round_finish" for e in events)
+
+
+def _save_soft(session) -> None:
+    """Incrementally persist the game so far, swallowing/logging any error.
+
+    Per design, a failed mid-game save must never interrupt play: the next
+    completed hand's save re-writes everything still missing (the recorder
+    dedups by round, so nothing is double-written).
+    """
+    try:
+        with SessionLocal() as db:
+            session.persist_incremental(db)
+    except Exception:
+        log.exception("incremental save failed for game %s", getattr(session, "game_id", "?"))
+
+
+def _save_start_soft(session) -> None:
+    """Create the Game row at start, swallowing/logging any error."""
+    try:
+        with SessionLocal() as db:
+            session.persist_start(db)
+    except Exception:
+        log.exception("initial save failed for game %s", getattr(session, "game_id", "?"))
 
 
 @router.websocket("/ws/games/{game_id}")
@@ -30,7 +60,8 @@ async def play(websocket: WebSocket, game_id: str) -> None:
         # On (re)connect: send current state, then either the pending hero ask or,
         # if the game hasn't been advanced yet, start it.
         async with lock:
-            if session._last_round_state is None and not session.finished:
+            first_connect = session._last_round_state is None and not session.finished
+            if first_connect:
                 events = session.start()
             else:
                 events = []
@@ -40,7 +71,13 @@ async def play(websocket: WebSocket, game_id: str) -> None:
                 "view": session.current_view(),
                 "pending_ask": session.pending_ask(),
             })
+            # Create the Game row as soon as the game begins so it shows up in
+            # history immediately (even with zero completed hands).
+            if first_connect:
+                _save_start_soft(session)
             await _stream(websocket, events)
+            if _ended_a_hand(events):
+                _save_soft(session)
             if session.finished:
                 await _finish(websocket, session, game_id)
                 return
@@ -57,11 +94,15 @@ async def play(websocket: WebSocket, game_id: str) -> None:
                     break
                 events = session.apply_hero_action(action, amount)
                 await _stream(websocket, events)
+                # Persist after any batch that finished one or more hands.
+                if _ended_a_hand(events):
+                    _save_soft(session)
                 if session.finished:
                     await _finish(websocket, session, game_id)
                     break
     except WebSocketDisconnect:
         # Leave the session in memory so the client can reconnect and resume.
+        # Completed hands are already saved by the per-hand hook above.
         return
 
 
@@ -76,7 +117,11 @@ async def _stream(websocket: WebSocket, events: list[dict]) -> None:
             n_pots = max(1, len([p for p in event.get("pot_winners", [])
                                  if p.get("winners") and p.get("amount", 0) > 0]))
             await asyncio.sleep(n_pots * 1.35 + 2.0)
-        elif event["type"] in ("to_act", "new_street"):
+        elif event["type"] == "new_street":
+            # Give the client time to slide the street's bets into the pot
+            # before the next card/action arrives.
+            await asyncio.sleep(0.8)
+        elif event["type"] == "to_act":
             await asyncio.sleep(EVENT_DELAY_S)
 
 
