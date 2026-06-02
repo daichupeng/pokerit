@@ -21,6 +21,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Secrets (Google OAuth client, session secret) come from .env (gitignored).
+    # See .env.example. DATABASE_URL falls back here if not set in .env.
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
     # Run the web app with hot-reload for development.
@@ -33,6 +37,9 @@ services:
     volumes:
       - ./src:/app/src
       - ./scripts:/app/scripts
+      # The vendored (patched) PyPokerEngine is editable-installed, so mount it
+      # too — otherwise the container uses the copy baked into the image.
+      - ./vendor:/app/vendor
       - /app/.venv
     ports:
       - "8000:8000"

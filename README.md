@@ -60,10 +60,46 @@ collapsible **Stats / Hands** panel.
 ### Run the web app
 
 ```bash
+cp .env.example .env               # then fill in Google OAuth creds (see below)
 docker compose up -d --build       # starts Postgres + the web app
-docker compose exec app uv run python scripts/init_db.py   # one-time: create schema
+docker compose exec app uv run alembic upgrade head   # create/upgrade schema
 # open http://localhost:8000
 ```
+
+## Accounts & authentication
+
+Sign-in is **Google OAuth2** (server-side flow via authlib), with signed
+httpOnly cookie sessions (Starlette `SessionMiddleware`). Login is required to
+create or play a game; the game record links to your account by email.
+
+- `auth/` — OAuth registry, session config, account-linking service, and the
+  `get_db` / `current_user` / `require_user` FastAPI dependencies.
+- `api/auth.py` — `GET /api/auth/google/login`, `…/callback`, `POST /api/auth/logout`,
+  `GET /api/auth/me`, `GET /api/auth/config`.
+- `api/profile.py` — `GET/PATCH/DELETE /api/profile` (display name, username,
+  bio, country, timezone, language, avatar, preferences; soft-delete).
+
+The `users` table now holds a full profile (username, avatar, bio, locale,
+status/role, timestamps); linked external identities live in `oauth_identities`.
+
+### Google Cloud setup
+
+1. Google Cloud Console → APIs & Services → **Credentials** → Create **OAuth
+   client ID** → *Web application*.
+2. Add an **Authorized redirect URI**: `${APP_BASE_URL}/api/auth/google/callback`
+   (e.g. `http://localhost:8000/api/auth/google/callback`).
+3. Put the client id/secret and a random `SESSION_SECRET` in `.env` (see
+   `.env.example`). `.env` is gitignored — never commit it.
+
+### Schema migrations (Alembic)
+
+```bash
+docker compose exec app uv run alembic upgrade head     # apply migrations
+docker compose exec app uv run alembic revision -m "msg" --autogenerate  # new migration
+```
+
+`scripts/init_db.py` (`create_all`) still works for a fresh throwaway DB, but
+Alembic is the canonical path and preserves existing data.
 
 ## CLI game + Docker (engine layer)
 

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import random
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
+from poker_engine.db.models import User
+from poker_trainer.auth.deps import require_user
 from poker_trainer.game.manager import manager
 from poker_trainer.game.session import GameSession
 
@@ -51,8 +53,8 @@ class CreateGameRequest(BaseModel):
     hide_styles: bool = True
     # Optional explicit per-bot styles (used when randomize_styles is False).
     styles: list[str] | None = None
-    hero_name: str = "you"
-    hero_email: str | None = None
+    # The hero is the logged-in user; identity is taken from the session, not
+    # from the client. (hero_name/hero_email request fields removed.)
     seed: int | None = None
     # Quick-bet presets (besides All-in), up to 5 each. Preflop values are
     # big-blind multiples; postflop values are pot percentages.
@@ -71,9 +73,12 @@ class GameSummary(BaseModel):
     created_at: str | None = None
 
 
-def _build_seats(req: CreateGameRequest) -> list[SeatSpec]:
+def _build_seats(req: CreateGameRequest, hero: User) -> list[SeatSpec]:
+    # The hero seat is the logged-in user; the recorder links the game to this
+    # account by email.
+    hero_name = hero.username or hero.display_name or "you"
     seats: list[SeatSpec] = [
-        SeatSpec(name=req.hero_name, kind=SeatKind.HUMAN, email=req.hero_email)
+        SeatSpec(name=hero_name, kind=SeatKind.HUMAN, email=hero.email)
     ]
     rng = random.Random(req.seed)
     names = _random_bot_names(req.num_bots, rng)
@@ -94,11 +99,11 @@ def _build_seats(req: CreateGameRequest) -> list[SeatSpec]:
 
 
 @router.post("/games", response_model=CreateGameResponse)
-def create_game(req: CreateGameRequest) -> CreateGameResponse:
+def create_game(req: CreateGameRequest, hero: User = Depends(require_user)) -> CreateGameResponse:
     if req.big_blind != req.small_blind * 2:
         # The engine derives BB as 2*SB; keep the contract explicit.
         raise HTTPException(400, "big_blind must equal 2 × small_blind.")
-    seats = _build_seats(req)
+    seats = _build_seats(req, hero)
     config = GameConfig(
         small_blind=req.small_blind,
         buy_in=req.buy_in,

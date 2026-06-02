@@ -146,9 +146,16 @@ class HandEvaluator:
   @classmethod
   def __search_straight(self, cards):
     bit_memo = reduce(lambda memo, card: memo | 1 << card.rank, cards, 0)
+    # PokerTrainer fix: let the Ace play low so A-2-3-4-5 (the "wheel") counts as
+    # a straight. The Ace bit is at 14; mirror it to bit 1 and start the run scan
+    # at 1. The wheel's start rank (1) is below every other straight, so it
+    # correctly ranks as the weakest straight. This also fixes the wheel
+    # straight-flush, since __search_straightflash delegates here.
+    if bit_memo & (1 << 14):
+      bit_memo |= 1 << 1
     rank = -1
     straight_check = lambda acc, i: acc & (bit_memo >> (r+i) & 1) == 1
-    for r in range(2, 15):
+    for r in range(1, 15):
       if reduce(straight_check, range(5), True): rank = r
     return rank
 

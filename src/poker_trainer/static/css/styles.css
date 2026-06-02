@@ -66,6 +66,17 @@ input[type=text], input[type=email], input[type=number] {
   padding: 0.8rem 1.2rem; background: #11151b; border-bottom: 1px solid #222a33;
 }
 .profile-chip { display: flex; align-items: center; gap: 0.6rem; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: #2a323d; }
+.avatar.lg { width: 64px; height: 64px; }
+.login-panel { align-items: stretch; text-align: center; }
+.google-btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.6rem;
+  background: #fff; color: #1f1f1f; font-weight: 600; border: 1px solid #dadce0; }
+.google-btn:hover:not(:disabled) { background: #f7f8f8; }
+.google-btn .g-logo { display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%; background: #4285f4; color: #fff; font-weight: 800; }
+.profile-head { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
+  border-radius: 8px; padding: 0.55rem 0.7rem; font: inherit; resize: vertical; }
 .main-body { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.2rem; align-items: center; }
 .hero-actions { width: min(520px, 92vw); }
 .hero-actions .btn { width: 100%; }
@@ -98,8 +109,10 @@ input[type=text], input[type=email], input[type=number] {
 .community { position: absolute; top: 55%; left: 50%; transform: translate(-50%, -50%);
   display: flex; gap: 10px; }
 .pot { position: absolute; top: 40%; left: 50%; transform: translateX(-50%);
-  background: rgba(0,0,0,.45); padding: 6px 16px; border-radius: 20px; font-weight: 700;
-  color: var(--gold); font-size: 1.15rem; }
+  background: rgba(0,0,0,.45); padding: 6px 16px; border-radius: 16px; font-weight: 700;
+  color: var(--gold); font-size: 1.15rem; text-align: center; line-height: 1.3; }
+.pot .pot-line { white-space: nowrap; }
+.pot .pot-line + .pot-line { font-size: 0.95rem; opacity: .9; }
 .table-message { position: absolute; top: 31%; left: 50%; transform: translateX(-50%);
   color: #fff; font-weight: 700; font-size: 1.1rem; text-shadow: 0 1px 4px #000; text-align: center; }
 
@@ -120,6 +133,8 @@ input[type=text], input[type=email], input[type=number] {
 .seat .stack { font-size: 1.1rem; font-weight: 600; color: var(--gold); }
 .seat .style-tag { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
 .seat .state-tag { font-size: 0.72rem; color: var(--danger); text-transform: uppercase; }
+.seat .hand-label { font-size: 0.74rem; font-weight: 700; color: var(--gold); margin-top: 2px;
+  white-space: nowrap; }
 .seat .hole { display: flex; gap: 5px; justify-content: center; margin-bottom: 5px; min-height: 132px; }
 
 /* Current bet: a chip-stack chip placed between the seat and the table center. */
@@ -134,12 +149,39 @@ input[type=text], input[type=email], input[type=number] {
   background: radial-gradient(circle at 30% 30%, #ffe9a8, var(--gold));
   border: 1px solid #b9952f; margin-right: 7px; vertical-align: -2px; }
 
-.badge { display: inline-block; width: 18px; height: 18px; line-height: 18px; border-radius: 50%;
-  font-size: 0.6rem; font-weight: 700; color: #1b1b1b; }
+/* Pot-award animation: a chip that slides from the pot to the winner's seat. */
+.pot-fly {
+  position: absolute; transform: translate(-50%, -50%); z-index: 5;
+  background: rgba(0,0,0,.7); border: 1px solid var(--gold);
+  border-radius: 16px; padding: 5px 12px;
+  font-size: 1.3rem; font-weight: 800; color: var(--gold); white-space: nowrap;
+  box-shadow: 0 0 14px rgba(232,198,106,.6);
+  transition: left .9s cubic-bezier(.4,.8,.3,1), top .9s cubic-bezier(.4,.8,.3,1), opacity .9s ease;
+}
+.pot-fly .chip { display: inline-block; width: 16px; height: 16px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #ffe9a8, var(--gold));
+  border: 1px solid #b9952f; margin-right: 7px; vertical-align: -2px; }
+
+/* Winning seat: a calm green glow while the pot travels in... */
+.seat.winner .plate {
+  border-color: #5fd06f;
+  box-shadow: 0 0 0 2px #5fd06f, 0 0 18px #5fd06f;
+}
+/* ...then a few bright blinks for ~2s once the pot has landed. */
+.seat.winner-blink .plate {
+  animation: winnerBlink .5s ease-in-out 4;
+}
+@keyframes winnerBlink {
+  0%, 100% { border-color: #5fd06f; box-shadow: 0 0 0 2px #5fd06f, 0 0 18px #5fd06f; }
+  50% { border-color: #b6ffc4; box-shadow: 0 0 0 4px #b6ffc4, 0 0 38px #8dff9f; }
+}
+
+.badge { display: inline-block; width: 28px; height: 28px; line-height: 28px; border-radius: 50%;
+  font-size: 0.8rem; font-weight: 800; color: #1b1b1b; box-shadow: 0 1px 3px rgba(0,0,0,.5); }
 .badge.btn-d { background: #fff; }
 .badge.sb { background: #9ad; }
 .badge.bb { background: #fc9; }
-.seat .badges { display: flex; gap: 3px; justify-content: center; margin-top: 3px; }
+.seat .badges { display: flex; gap: 5px; justify-content: center; margin-top: 5px; }
 
 /* ---------- cards (CSS/SVG drawn) ---------- */
 .pcard {
@@ -159,6 +201,8 @@ input[type=text], input[type=email], input[type=number] {
   border-color: #16243f;
 }
 .pcard.placeholder { background: rgba(255,255,255,.06); border: 1px dashed #3a4a5a; box-shadow: none; }
+/* Cards not part of the winner's best five are faded at showdown. */
+.pcard.dimmed { opacity: .32; filter: grayscale(.7); transition: opacity .3s, filter .3s; }
 
 /* ---------- controls ---------- */
 .controls {

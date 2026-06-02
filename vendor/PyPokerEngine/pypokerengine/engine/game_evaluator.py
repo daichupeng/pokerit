@@ -1,8 +1,53 @@
+from collections import Counter
 from functools import reduce
-from itertools import groupby
+from itertools import combinations, groupby
 
 from pypokerengine.engine.hand_evaluator import HandEvaluator
 from pypokerengine.engine.pay_info import PayInfo
+
+
+# --- PokerTrainer: correct best-5-of-7 hand ranking (see __find_winners_from) ---
+# Returns a tuple that orders hands exactly per poker rules, including kickers
+# and the A-2-3-4-5 wheel. Larger tuple == stronger hand. Works on engine Card
+# objects (which have integer .rank 2..14 and .suit).
+
+def _straight_high(rank_set):
+  rs = set(rank_set)
+  if 14 in rs:
+    rs = rs | {1}  # ace plays low for A-2-3-4-5
+  for high in range(14, 4, -1):
+    if all(r in rs for r in range(high, high - 5, -1)):
+      return high
+  return None
+
+def _rank5(cards):
+  ranks = sorted((c.rank for c in cards), reverse=True)
+  suits = [c.suit for c in cards]
+  counts = Counter(ranks)
+  groups = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+  is_flush = len(set(suits)) == 1
+  sh = _straight_high(set(ranks))
+  if is_flush and sh: return (8, sh)
+  if groups[0][1] == 4:
+    return (7, groups[0][0], max(r for r in ranks if r != groups[0][0]))
+  if groups[0][1] == 3 and len(groups) > 1 and groups[1][1] >= 2:
+    return (6, groups[0][0], groups[1][0])
+  if is_flush: return (5, tuple(ranks))
+  if sh: return (4, sh)
+  if groups[0][1] == 3:
+    return (3, groups[0][0], tuple(sorted((r for r in ranks if r != groups[0][0]), reverse=True)))
+  if groups[0][1] == 2 and len(groups) > 1 and groups[1][1] == 2:
+    hi, lo = sorted([groups[0][0], groups[1][0]], reverse=True)
+    return (2, hi, lo, max(r for r in ranks if r != hi and r != lo))
+  if groups[0][1] == 2:
+    return (1, groups[0][0], tuple(sorted((r for r in ranks if r != groups[0][0]), reverse=True)))
+  return (0, tuple(ranks))
+
+def _best5_strength(hole, community):
+  cards = list(hole) + list(community)
+  if len(cards) < 5:
+    return (0, tuple(sorted((c.rank for c in cards), reverse=True)))
+  return max((_rank5(combo) for combo in combinations(cards, 5)))
 
 class GameEvaluator:
 
@@ -18,6 +63,25 @@ class GameEvaluator:
     side_pots = self.__get_side_pots(players)
     main_pot = self.__get_main_pot(players, side_pots)
     return side_pots + [main_pot]
+
+  @classmethod
+  def gen_pots_with_winners(self, community_card, players):
+    """PokerTrainer addition: per-pot breakdown with the winning uuids.
+
+    Returns a list (main pot last, side pots before it) of
+    ``{"amount": int, "eligibles": [uuid], "winners": [uuid]}`` so callers can
+    animate each pot moving to its winner(s). Mirrors the per-pot logic used in
+    __calc_prize_distribution, but exposes who won each pot.
+    """
+    result = []
+    for pot in self.create_pot(players):
+      winners = self.__find_winners_from(community_card, pot["eligibles"])
+      result.append({
+          "amount": pot["amount"],
+          "eligibles": [p.uuid for p in pot["eligibles"]],
+          "winners": [p.uuid for p in winners],
+      })
+    return result
 
 
   @classmethod
@@ -38,14 +102,15 @@ class GameEvaluator:
 
   @classmethod
   def __find_winners_from(self, community_card, players):
-    score_player = lambda player: HandEvaluator.eval_hand(player.hole_card, community_card)
-
+    # PokerTrainer fix: rank by a CORRECT best-5-of-7 comparison rather than
+    # HandEvaluator.eval_hand. The latter packs the player's two hole-card ranks
+    # into the score even when they are not part of the made hand, which mis-ranks
+    # kickers and produces wrong winners/ties when players share the board (e.g.
+    # both playing a straight on the board). This decides actual payouts too.
     active_players = [player for player in players if player.is_active()]
-    scores = [score_player(player) for player in active_players]
+    scores = [_best5_strength(player.hole_card, community_card) for player in active_players]
     best_score = max(scores)
-    score_with_players = [(score, player) for score, player in zip(scores, active_players)]
-    winners = [s_p[1] for s_p in score_with_players if s_p[0] == best_score]
-    return winners
+    return [p for p, s in zip(active_players, scores) if s == best_score]
 
   @classmethod
   def __gen_hand_info_if_needed(self, players, community):

@@ -53,24 +53,90 @@ class BotStyle(str, enum.Enum):
     ROCK = "rock"
 
 
+class AccountStatus(str, enum.Enum):
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    DELETED = "deleted"
+
+
+class UserRole(str, enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
+
+
+class AuthProvider(str, enum.Enum):
+    GOOGLE = "google"
+
+
 def _uuid() -> uuid.UUID:
     return uuid.uuid4()
 
 
 class User(Base):
-    """A human account. Prepares for the online, multi-user launch."""
+    """A human account, modeled after major online platforms."""
 
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+
+    # -- core identity --
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    username: Mapped[str | None] = mapped_column(String(40), unique=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(100))
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # -- locale & preferences --
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)  # ISO-3166 alpha-2
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    preferences: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+
+    # -- account lifecycle --
+    status: Mapped[AccountStatus] = mapped_column(
+        Enum(AccountStatus), default=AccountStatus.ACTIVE, server_default=AccountStatus.ACTIVE.value
+    )
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole), default=UserRole.USER, server_default=UserRole.USER.value
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     games: Mapped[list["Game"]] = relationship(back_populates="hero", foreign_keys="Game.hero_user_id")
+    identities: Mapped[list["OAuthIdentity"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class OAuthIdentity(Base):
+    """A linked external identity (e.g. Google). One account may link several."""
+
+    __tablename__ = "oauth_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_provider_subject"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[AuthProvider] = mapped_column(Enum(AuthProvider))
+    provider_user_id: Mapped[str] = mapped_column(String(255))  # the provider 'sub'
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="identities")
 
 
 class Game(Base):

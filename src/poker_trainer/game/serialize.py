@@ -65,14 +65,25 @@ def public_view(round_state: dict, hero_uuid: str, seat_meta: dict, hero_hole: l
 
 
 def _current_bets(round_state: dict) -> dict[str, int]:
-    """Sum each player's paid chips on the current street (for bet display)."""
+    """Chips each player has committed on the current street (for bet display).
+
+    In PyPokerEngine each action history entry carries ``amount`` = the player's
+    cumulative to-amount on that street (SB=50, BB=100, a raise-to=300, a call
+    matching it=300). So a player's current bet is the ``amount`` of their most
+    recent action this street — which naturally shows the SB/BB blinds in front
+    of them at the start of the hand.
+    """
     histories = round_state.get("action_histories", {})
     street = round_state.get("street")
     entries = histories.get(street, []) if isinstance(street, str) else []
     bets: dict[str, int] = {}
     for entry in entries:
         uuid_ = entry.get("uuid")
-        paid = entry.get("paid", 0) or 0
-        if uuid_ is not None:
-            bets[uuid_] = bets.get(uuid_, 0) + paid
-    return bets
+        if uuid_ is None:
+            continue
+        if entry.get("action") == "FOLD":
+            # A fold ends that player's involvement — no chips shown out front.
+            bets.pop(uuid_, None)
+        else:
+            bets[uuid_] = entry.get("amount", 0) or 0
+    return {u: a for u, a in bets.items() if a > 0}

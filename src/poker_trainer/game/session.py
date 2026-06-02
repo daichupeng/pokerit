@@ -14,6 +14,7 @@ from datetime import datetime
 from pypokerengine.api.emulator import Emulator, Event
 from pypokerengine.engine.poker_constants import PokerConstants as Const
 
+from poker_engine import hand_eval
 from poker_engine.bots.styles import STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind
 from poker_engine.recorder import PerspectiveRecorder
@@ -201,11 +202,18 @@ class GameSession:
                 event["round_state"],
             )
             revealed = self.recorder.last_showdown_reveals(exclude_uuid=self.hero_uuid)
+            # The engine has cleared hole cards by now, so use the hero's cards
+            # captured by the recorder at round start for the round-finish view.
+            hero_hole = self.recorder.last_hero_hole()
+            showdown = self._showdown_hands(event.get("hand_info", []),
+                                            event["round_state"], hero_hole)
             return [{
                 "type": "round_finish",
                 "winners": event["winners"],
                 "revealed": revealed,
-                "view": self._view(event["round_state"]),
+                "pot_winners": event.get("pot_winners", []),
+                "showdown": showdown,
+                "view": self._view(event["round_state"], hero_hole=hero_hole),
             }]
         if etype == Event.GAME_FINISH:
             self.finished = True
@@ -219,9 +227,36 @@ class GameSession:
             "view": self._view(ask["round_state"]),
         }
 
-    def _view(self, round_state: dict) -> dict:
-        hero_hole = serialize.hero_hole_cards(self.game_state, self.hero_uuid)
+    def _view(self, round_state: dict, hero_hole: list | None = None) -> dict:
+        # By default read the hero's cards from the live table; callers can pass
+        # an override (e.g. at showdown, when the engine has cleared the table).
+        if hero_hole is None:
+            hero_hole = serialize.hero_hole_cards(self.game_state, self.hero_uuid)
         return serialize.public_view(round_state, self.hero_uuid, self.seat_meta, hero_hole)
+
+    def _showdown_hands(self, hand_info: list, round_state: dict, hero_hole: list) -> list:
+        """Per-showdown-player hand label + best-5 cards, for the UI.
+
+        Built only from ``hand_info`` (showdown participants), so no folded or
+        hidden hand is ever evaluated/exposed. Uses the patched per-entry
+        ``hole_card``; the hero's own cards come from the recorder.
+        """
+        board = list(round_state.get("community_card", []))
+        out = []
+        for entry in hand_info or []:
+            uuid_ = entry["uuid"]
+            hole = entry.get("hole_card")
+            if not hole and uuid_ == self.hero_uuid:
+                hole = hero_hole
+            if not hole:
+                continue
+            best = hand_eval.best_five(list(hole), board)
+            out.append({
+                "uuid": uuid_,
+                "hand_label": best["label"],
+                "best_cards": best["cards"],
+            })
+        return out
 
     def current_view(self) -> dict:
         rs = self._last_round_state

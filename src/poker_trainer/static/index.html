@@ -13,20 +13,17 @@
 
   <template id="screen-login">
     <section class="screen center">
-      <div class="card-panel">
+      <div class="card-panel login-panel">
         <h1 class="brand">♠ Poker Trainer</h1>
-        <p class="muted">Sign in to track your sessions — or jump straight in.</p>
-        <label>Display name
-          <input id="login-name" type="text" placeholder="e.g. Phil" />
-        </label>
-        <label>Email <span class="muted">(optional)</span>
-          <input id="login-email" type="email" placeholder="you@example.com" />
-        </label>
-        <div class="row">
-          <button id="login-continue" class="btn primary">Continue</button>
-          <button id="login-skip" class="btn ghost">Skip — play as guest</button>
-        </div>
-        <p class="tiny muted">Login is a placeholder for now; no password required.</p>
+        <p class="muted">Sign in to play and track your sessions.</p>
+        <button id="login-google" class="btn google-btn">
+          <span class="g-logo">G</span> Sign in with Google
+        </button>
+        <p id="login-error" class="tiny error hidden"></p>
+        <p id="login-disabled" class="tiny muted hidden">
+          Google sign-in isn’t configured on this server yet
+          (set <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>).
+        </p>
       </div>
     </section>
   </template>
@@ -36,8 +33,10 @@
       <header class="topbar">
         <h1 class="brand small">♠ Poker Trainer</h1>
         <div class="profile-chip">
+          <img id="profile-avatar" class="avatar" alt="" />
           <span id="profile-name">Guest</span>
-          <button class="btn tiny ghost" disabled title="Coming soon">Edit profile</button>
+          <button id="go-profile" class="btn tiny ghost">Profile</button>
+          <button id="logout-btn" class="btn tiny ghost">Log out</button>
         </div>
       </header>
       <div class="main-body">
@@ -107,6 +106,55 @@
             <button id="create-start" class="btn primary big">Start game</button>
           </div>
           <p id="create-error" class="error hidden"></p>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-profile">
+    <section class="screen">
+      <header class="topbar">
+        <h1 class="brand small">♠ Profile</h1>
+        <button id="profile-back" class="btn ghost tiny">← Back</button>
+      </header>
+      <div class="main-body">
+        <div class="card-panel">
+          <div class="profile-head">
+            <img id="pf-avatar" class="avatar lg" alt="" />
+            <div>
+              <div id="pf-email" class="muted tiny"></div>
+              <div id="pf-meta" class="muted tiny"></div>
+            </div>
+          </div>
+          <label>Display name
+            <input id="pf-display" type="text" maxlength="100" />
+          </label>
+          <label>Username <span class="muted tiny">(3–40: letters, digits, _)</span>
+            <input id="pf-username" type="text" maxlength="40" placeholder="(not set)" />
+          </label>
+          <label>Bio
+            <textarea id="pf-bio" rows="3" maxlength="2000"></textarea>
+          </label>
+          <div class="form-grid">
+            <label>Country <span class="muted tiny">(2-letter)</span>
+              <input id="pf-country" type="text" maxlength="2" placeholder="US" />
+            </label>
+            <label>Timezone
+              <input id="pf-timezone" type="text" maxlength="64" placeholder="America/New_York" />
+            </label>
+            <label>Language
+              <input id="pf-language" type="text" maxlength="10" placeholder="en" />
+            </label>
+            <label>Avatar URL
+              <input id="pf-avatar-url" type="text" maxlength="1000" />
+            </label>
+          </div>
+          <p id="pf-error" class="error hidden"></p>
+          <p id="pf-saved" class="tiny hidden" style="color:#5fbf6f">Saved ✓</p>
+          <div class="row">
+            <button id="pf-save" class="btn primary">Save changes</button>
+            <button id="pf-delete" class="btn danger ghost">Delete account</button>
+          </div>
         </div>
       </div>
     </section>

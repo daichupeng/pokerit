@@ -239,7 +239,9 @@ class Event:
                 # showdown reveals. hand_info is [] when there is no showdown, and
                 # otherwise contains each showdown participant's exact hole_card
                 # (added by our game_evaluator patch) — preserving hidden info.
-                "hand_info": message.get("hand_info", [])
+                "hand_info": message.get("hand_info", []),
+                # Per-pot winners for the pot-award animation (main + side pots).
+                "pot_winners": message.get("pot_winners", [])
                 }
 
     @classmethod

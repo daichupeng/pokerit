@@ -97,6 +97,16 @@ class PerspectiveRecorder:
         reveals = self._hands[-1].revealed_cards
         return {u: list(c) for u, c in reveals.items() if u != exclude_uuid}
 
+    def last_hero_hole(self) -> list[str]:
+        """The hero's own hole cards for the most recently recorded hand.
+
+        Captured at round start, so it is available even after the engine clears
+        the table at showdown (when reading the live table would return nothing).
+        """
+        if not self._hands:
+            return []
+        return list(self._hands[-1].hero_hole)
+
     # -- attachment ---------------------------------------------------------
 
     def attach(self, player) -> None:

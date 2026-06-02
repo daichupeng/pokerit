@@ -11,7 +11,7 @@
   function cardEl(code, opts) {
     opts = opts || {};
     const el = document.createElement("div");
-    el.className = "pcard" + (opts.hero ? " hero" : opts.lg ? " lg" : "");
+    el.className = "pcard" + (opts.hero ? " hero" : opts.lg ? " lg" : "") + (opts.dimmed ? " dimmed" : "");
     if (!code) { el.classList.add("placeholder"); return el; }
     if (code === "back") { el.classList.add("back"); return el; }
     // code like "SK", "HТ"(T=10), "D2"
@@ -151,14 +151,21 @@
           if (ev.view) this.render(ev.view, ev.uuid);
           break;
         case "new_street":
+          this.showdown = null; this.winnerUuids = null;  // clear prior showdown
           if (ev.view) this.render(ev.view);
           this.setMessage(cap(ev.street));
           break;
         case "round_finish":
+          // Stash showdown info so render() can show hand labels and dim the
+          // winner's unused cards. Cleared by the next non-showdown render.
+          this.showdown = {};
+          (ev.showdown || []).forEach((s) => (this.showdown[s.uuid] = s));
+          this.winnerUuids = new Set((ev.winners || []).map((w) => w.uuid));
           if (ev.view) this.render(ev.view);
           this.revealShowdown(ev.revealed);
           this.recordHand(ev);
           this.announceWinners(ev.winners, ev.view);
+          this.animatePotAward(ev.pot_winners, ev.view);
           break;
         case "ask":
           this.onAsk(ev);
@@ -172,6 +179,7 @@
     }
 
     onAsk(ask) {
+      this.showdown = null; this.winnerUuids = null;  // new betting view, no showdown
       this.validActions = ask.valid_actions;
       if (ask.view) this.render(ask.view, this.heroUuid);
       this.enableControls(ask.valid_actions);
@@ -190,17 +198,38 @@
       this.$blinds.textContent = `Blinds ${view.small_blind_amount}/${view.small_blind_amount * 2}`;
       this.$hand.textContent = view.round_count ? `Hand #${view.round_count}` : "";
 
+      // At showdown, the union of the winners' best-5 cards is kept bright;
+      // every other card (board kicker / loser's hole) is dimmed.
+      const sd = this.showdown || {};
+      const winners = this.winnerUuids || new Set();
+      const brightBoard = new Set();
+      Object.values(sd).forEach((s) => {
+        if (winners.has(s.uuid)) (s.best_cards || []).forEach((c) => brightBoard.add(c));
+      });
+      const showdownActive = Object.keys(sd).length > 0 && winners.size > 0;
+
       // community
       this.$community.innerHTML = "";
-      (view.community_card || []).forEach((c) => this.$community.appendChild(cardEl(c, { lg: true })));
+      (view.community_card || []).forEach((c) => {
+        const dim = showdownActive && !brightBoard.has(c);
+        this.$community.appendChild(cardEl(c, { lg: true, dimmed: dim }));
+      });
 
-      // pot
-      const main = (view.pot && view.pot.main && view.pot.main.amount) || 0;
-      const side = (view.pot && view.pot.side || []).reduce((a, s) => a + (s.amount || 0), 0);
-      this.$pot.textContent = `Pot: ${main + side}`;
+      // pot — show the main pot and each side pot separately.
+      const mainAmt = (view.pot && view.pot.main && view.pot.main.amount) || 0;
+      const sidePots = (view.pot && view.pot.side) || [];
+      const lines = [];
+      if (sidePots.length) {
+        lines.push(`Main Pot: ${mainAmt}`);
+        sidePots.forEach((s, i) => lines.push(`Side Pot ${i + 1}: ${s.amount || 0}`));
+      } else {
+        lines.push(`Pot: ${mainAmt}`);
+      }
+      this.$pot.innerHTML = lines.map((l) => `<div class="pot-line">${l}</div>`).join("");
 
       // seats
       this.$seats.innerHTML = "";
+      this.seatEls = {};  // uuid -> {el, x, y} for the pot-award animation
       view.seats.forEach((seat, i) => {
         const [x, y] = this.seatPos[i] || [50, 50];
         const el = document.createElement("div");
@@ -208,22 +237,38 @@
         if (actingUuid && seat.uuid === actingUuid) el.classList.add("acting");
         else if (!actingUuid && seat.pos === view.next_player) el.classList.add("acting");
         el.style.left = x + "%"; el.style.top = y + "%";
+        this.seatEls[seat.uuid] = { el, x, y };
 
-        // All players' cards are the same (large) size.
-        const cardOpts = { hero: true };
+        // All players' cards are the same (large) size. At showdown:
+        //  - a winner keeps their best-5 bright and dims their 2 unused cards;
+        //  - a non-winner has both cards dimmed (they lost the pot).
+        const sdEntry = sd[seat.uuid];
+        const isWinner = showdownActive && winners.has(seat.uuid);
+        const bestSet = (isWinner && sdEntry) ? new Set(sdEntry.best_cards || []) : null;
+        const dimCard = (c) => {
+          if (!showdownActive) return false;
+          if (isWinner) return bestSet ? !bestSet.has(c) : false;  // winner: dim kickers
+          return true;  // non-winner at showdown: dim both cards
+        };
         const hole = document.createElement("div");
         hole.className = "hole";
-        if (seat.hole_cards) seat.hole_cards.forEach((c) => hole.appendChild(cardEl(c, cardOpts)));
-        else if (seat.state !== "folded") { hole.appendChild(cardEl("back", cardOpts)); hole.appendChild(cardEl("back", cardOpts)); }
+        if (seat.hole_cards) {
+          seat.hole_cards.forEach((c) =>
+            hole.appendChild(cardEl(c, { hero: true, dimmed: dimCard(c) })));
+        } else if (seat.state !== "folded") {
+          hole.appendChild(cardEl("back", { hero: true }));
+          hole.appendChild(cardEl("back", { hero: true }));
+        }
 
         const plate = document.createElement("div");
         plate.className = "plate";
         const styleTag = seat.style ? `<div class="style-tag">${seat.style}</div>` : "";
         const stateTag = seat.state === "allin" ? `<div class="state-tag">ALL-IN</div>`
           : seat.state === "folded" ? `<div class="state-tag">FOLD</div>` : "";
+        const labelTag = sdEntry ? `<div class="hand-label">${esc(sdEntry.hand_label)}</div>` : "";
         plate.innerHTML =
           `<div class="name">${esc(seat.name)}${seat.is_hero ? " (you)" : ""}</div>` +
-          `<div class="stack">${seat.stack}</div>` + styleTag + stateTag;
+          `<div class="stack">${seat.stack}</div>` + styleTag + stateTag + labelTag;
 
         const badges = document.createElement("div");
         badges.className = "badges";
@@ -266,6 +311,66 @@
         return s ? s.name : "?";
       });
       this.setMessage(`Winner: ${names.join(", ")}`);
+    }
+
+    // Award the pots one at a time: each pot's chips slide from the center to
+    // its winner(s) in series (main pot first, then each side pot), then the
+    // winning seats blink. Split pots send a chip to each tied winner.
+    animatePotAward(potWinners, view) {
+      if (!potWinners || !potWinners.length || !this.seatEls) return;
+
+      const MOVE_MS = 900;    // chip travel time (matches the CSS transition)
+      const GAP_MS = 450;     // pause between consecutive pots
+      const BLINK_MS = 2000;  // winners blink after all pots land
+
+      // The engine orders side pots first, main pot last. Award the main pot
+      // first, then side pots in order, for a clearer narrative.
+      const ordered = potWinners
+        .filter((p) => (p.winners || []).length && p.amount > 0)
+        .reverse();
+      if (!ordered.length) return;
+
+      const labelFor = (idx) => (idx === 0 ? "Main pot" : `Side pot ${idx}`);
+      const POT_X = 50, POT_Y = 40;
+      const allWinnerEls = new Set();
+
+      const awardPot = (pot, idx) => {
+        this.setMessage(`${labelFor(idx)}: ${pot.amount}`);
+        const winners = pot.winners;
+        const share = Math.floor(pot.amount / winners.length);
+        winners.forEach((uuid) => {
+          const ref = this.seatEls[uuid];
+          if (!ref) return;
+          ref.el.classList.add("winner");
+          allWinnerEls.add(ref.el);
+          const chip = document.createElement("div");
+          chip.className = "pot-fly";
+          chip.innerHTML = `<span class="chip"></span>${share}`;
+          chip.style.left = POT_X + "%"; chip.style.top = POT_Y + "%";
+          this.$seats.appendChild(chip);
+          requestAnimationFrame(() => {
+            chip.style.left = ref.x + "%";
+            chip.style.top = ref.y + "%";
+            chip.style.opacity = "0.15";
+          });
+          setTimeout(() => chip.remove(), MOVE_MS);
+        });
+      };
+
+      // Chain the pots in series.
+      let delay = 0;
+      ordered.forEach((pot, idx) => {
+        setTimeout(() => awardPot(pot, idx), delay);
+        delay += MOVE_MS + GAP_MS;
+      });
+
+      // After the last pot lands, blink all winners, then clear.
+      setTimeout(() => {
+        allWinnerEls.forEach((el) => el.classList.add("winner-blink"));
+      }, delay);
+      setTimeout(() => {
+        allWinnerEls.forEach((el) => el.classList.remove("winner", "winner-blink"));
+      }, delay + BLINK_MS);
     }
 
     // ---- bet controls ----

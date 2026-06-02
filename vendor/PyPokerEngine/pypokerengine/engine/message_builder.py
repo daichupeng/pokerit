@@ -67,12 +67,15 @@ class MessageBuilder:
     return self.__build_notification_message(message)
 
   @classmethod
-  def build_round_result_message(self, round_count, winners, hand_info, state):
+  def build_round_result_message(self, round_count, winners, hand_info, state, pot_winners=None):
     message = {
         "message_type": self.ROUND_RESULT_MESSAGE,
         "round_count": round_count,
         "hand_info"  : hand_info,
-        "round_state": DataEncoder.encode_round_state(state)
+        "round_state": DataEncoder.encode_round_state(state),
+        # PokerTrainer: per-pot breakdown with winning uuids, for the pot-award
+        # animation. List of {amount, eligibles:[uuid], winners:[uuid]}.
+        "pot_winners": pot_winners or []
     }
     message.update(DataEncoder.encode_winners(winners))
     return self.__build_notification_message(message)

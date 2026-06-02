@@ -69,7 +69,14 @@ async def _stream(websocket: WebSocket, events: list[dict]) -> None:
     """Send events to the browser, pacing non-terminal ones for animation."""
     for event in events:
         await websocket.send_json({"type": "event", "event": event})
-        if event["type"] in ("to_act", "new_street", "round_finish"):
+        if event["type"] == "round_finish":
+            # Hold so the per-pot award animation can play out in series before
+            # the next hand starts: ~1.35s per pot (travel + gap) + 2s winner
+            # blink. Multiple pots (side pots) extend the hold.
+            n_pots = max(1, len([p for p in event.get("pot_winners", [])
+                                 if p.get("winners") and p.get("amount", 0) > 0]))
+            await asyncio.sleep(n_pots * 1.35 + 2.0)
+        elif event["type"] in ("to_act", "new_street"):
             await asyncio.sleep(EVENT_DELAY_S)
 
 

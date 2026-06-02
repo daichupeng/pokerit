@@ -3,12 +3,9 @@
   "use strict";
 
   const app = document.getElementById("app");
-  const state = { user: loadUser() };
-
-  function loadUser() {
-    try { return JSON.parse(localStorage.getItem("pt_user") || "null"); } catch { return null; }
-  }
-  function saveUser(u) { state.user = u; localStorage.setItem("pt_user", JSON.stringify(u)); }
+  // The session cookie is the source of truth for identity; we cache the
+  // fetched profile object for instant header rendering.
+  const state = { user: null, bootstrapped: false };
 
   function screen(id) {
     const tpl = document.getElementById("screen-" + id);
@@ -18,35 +15,57 @@
 
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
+    if (res.status === 204) return null;
     if (!res.ok) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail || detail; } catch {}
-      throw new Error(detail);
+      const err = new Error(detail); err.status = res.status; throw err;
     }
     return res.json();
   }
 
+  // Load the logged-in user from the session, once per page load.
+  async function bootstrap() {
+    try { state.user = await api("/api/auth/me"); }
+    catch { state.user = null; }
+    state.bootstrapped = true;
+  }
+
   // ---------- screens ----------
-  function showLogin() {
+  async function showLogin() {
     screen("login");
-    const go = async (asGuest) => {
-      const name = document.getElementById("login-name").value;
-      const email = document.getElementById("login-email").value;
-      const body = asGuest ? {} : { display_name: name, email };
-      try {
-        const user = await api("/api/login", { method: "POST", body: JSON.stringify(body) });
-        saveUser(user);
-        location.hash = "#/";
-      } catch (e) { alert("Login failed: " + e.message); }
-    };
-    document.getElementById("login-continue").onclick = () => go(false);
-    document.getElementById("login-skip").onclick = () => go(true);
+    const btn = document.getElementById("login-google");
+    const err = document.getElementById("login-error");
+    // Surface an OAuth error if Google bounced us back with one.
+    const m = location.hash.match(/error=oauth/);
+    if (m) { err.textContent = "Google sign-in failed. Please try again."; err.classList.remove("hidden"); }
+    try {
+      const cfg = await api("/api/auth/config");
+      if (!cfg.google_enabled) {
+        btn.disabled = true;
+        document.getElementById("login-disabled").classList.remove("hidden");
+      }
+    } catch {}
+    btn.onclick = () => { window.location.href = "/api/auth/google/login"; };
+  }
+
+  function renderProfileChip() {
+    const av = document.getElementById("profile-avatar");
+    if (state.user && state.user.avatar_url) { av.src = state.user.avatar_url; av.classList.remove("hidden"); }
+    else if (av) av.classList.add("hidden");
+    document.getElementById("profile-name").textContent =
+      state.user ? (state.user.username || state.user.display_name) : "Guest";
   }
 
   async function showMain() {
     if (!state.user) { location.hash = "#/login"; return; }
     screen("main");
-    document.getElementById("profile-name").textContent = state.user.display_name;
+    renderProfileChip();
+    document.getElementById("go-profile").onclick = () => (location.hash = "#/profile");
+    document.getElementById("logout-btn").onclick = async () => {
+      await api("/api/auth/logout", { method: "POST" });
+      state.user = null; location.hash = "#/login";
+    };
     document.getElementById("go-create").onclick = () => (location.hash = "#/create");
     const list = document.getElementById("games-list");
     try {
@@ -122,8 +141,7 @@
         styles,
         preflop_quick: readChips(preflopRows),
         postflop_quick: readChips(postflopRows),
-        hero_name: state.user.display_name,
-        hero_email: state.user.email,
+        // Hero identity comes from the session on the server, not the client.
       };
       try {
         const res = await api("/api/games", { method: "POST", body: JSON.stringify(body) });
@@ -136,20 +154,71 @@
   }
 
   function showTable(gameId) {
+    if (!state.user) { location.hash = "#/login"; return; }
     screen("table");
     document.getElementById("leave-game").onclick = () => (location.hash = "#/");
     const wsUrl = sessionStorage.getItem("pt_ws_" + gameId) || `/ws/games/${gameId}`;
     window.PokerTable.mount(gameId, wsUrl);
   }
 
+  async function showProfile() {
+    if (!state.user) { location.hash = "#/login"; return; }
+    screen("profile");
+    const $ = (id) => document.getElementById(id);
+    $("profile-back").onclick = () => (location.hash = "#/");
+
+    let p;
+    try { p = await api("/api/profile"); }
+    catch (e) { if (e.status === 401) { location.hash = "#/login"; return; } throw e; }
+    state.user = p;
+
+    if (p.avatar_url) { $("pf-avatar").src = p.avatar_url; }
+    $("pf-email").textContent = p.email + (p.email_verified ? " ✓" : "");
+    $("pf-meta").textContent =
+      `${p.status} · member since ${(p.created_at || "").slice(0, 10)}`;
+    $("pf-display").value = p.display_name || "";
+    $("pf-username").value = p.username || "";
+    $("pf-bio").value = p.bio || "";
+    $("pf-country").value = p.country || "";
+    $("pf-timezone").value = p.timezone || "";
+    $("pf-language").value = p.language || "";
+    $("pf-avatar-url").value = p.avatar_url || "";
+
+    $("pf-save").onclick = async () => {
+      const err = $("pf-error"), ok = $("pf-saved");
+      err.classList.add("hidden"); ok.classList.add("hidden");
+      const body = {
+        display_name: $("pf-display").value,
+        username: $("pf-username").value.trim() || null,
+        bio: $("pf-bio").value,
+        country: $("pf-country").value.trim() || null,
+        timezone: $("pf-timezone").value.trim() || null,
+        language: $("pf-language").value.trim() || null,
+        avatar_url: $("pf-avatar-url").value.trim() || null,
+      };
+      try {
+        state.user = await api("/api/profile", { method: "PATCH", body: JSON.stringify(body) });
+        ok.classList.remove("hidden");
+      } catch (e) { err.textContent = e.message; err.classList.remove("hidden"); }
+    };
+
+    $("pf-delete").onclick = async () => {
+      if (!confirm("Delete your account? Your games are kept but you'll be logged out.")) return;
+      await api("/api/profile", { method: "DELETE" });
+      state.user = null; location.hash = "#/login";
+    };
+  }
+
   function clamp(v, lo, hi) { v = parseInt(v, 10); if (isNaN(v)) v = lo; return Math.max(lo, Math.min(v, hi)); }
 
   // ---------- router ----------
-  function route() {
+  async function route() {
+    if (!state.bootstrapped) await bootstrap();
     const hash = location.hash || (state.user ? "#/" : "#/login");
     if (hash.startsWith("#/table/")) return showTable(hash.slice("#/table/".length));
     if (hash === "#/create") return showCreate();
-    if (hash === "#/login") return showLogin();
+    if (hash === "#/profile") return showProfile();
+    if (hash.startsWith("#/login")) return showLogin();
     return showMain();
   }
 
