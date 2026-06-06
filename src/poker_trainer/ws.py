@@ -37,15 +37,6 @@ def _save_soft(session) -> None:
         log.exception("incremental save failed for game %s", getattr(session, "game_id", "?"))
 
 
-def _save_start_soft(session) -> None:
-    """Create the Game row at start, swallowing/logging any error."""
-    try:
-        with SessionLocal() as db:
-            session.persist_start(db)
-    except Exception:
-        log.exception("initial save failed for game %s", getattr(session, "game_id", "?"))
-
-
 @router.websocket("/ws/games/{game_id}")
 async def play(websocket: WebSocket, game_id: str) -> None:
     await websocket.accept()
@@ -72,10 +63,6 @@ async def play(websocket: WebSocket, game_id: str) -> None:
                 "view": session.current_view(),
                 "pending_ask": session.pending_ask(),
             })
-            # Create the Game row as soon as the game begins so it shows up in
-            # history immediately (even with zero completed hands).
-            if first_connect:
-                _save_start_soft(session)
             await _stream(websocket, events)
             if _ended_a_hand(events):
                 _save_soft(session)
