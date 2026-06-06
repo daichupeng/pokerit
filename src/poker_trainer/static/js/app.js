@@ -69,6 +69,7 @@
     document.getElementById("go-create").onclick = () => (location.hash = "#/create");
     document.getElementById("go-history").onclick = () => (location.hash = "#/history");
     document.getElementById("see-all-history").onclick = () => (location.hash = "#/history");
+    wireCoachBtns(null);
     const list = document.getElementById("games-list");
     try {
       const games = await api("/api/games");
@@ -130,6 +131,7 @@
     if (!state.user) { location.hash = "#/login"; return; }
     screen("history");
     document.getElementById("history-back").onclick = () => (location.hash = "#/");
+    wireCoachBtns(null);
     const list = document.getElementById("history-list");
     try {
       const games = await api("/api/games");
@@ -157,8 +159,6 @@
       list.innerHTML = `<p class="error">Could not load game: ${e.message}</p>`;
       return;
     }
-    document.getElementById("hands-summary").textContent =
-      `${fmtDate(data.started_at)} · ${data.small_blind}/${data.big_blind} · ${data.hands.length} hands`;
     if (!data.hands.length) {
       list.innerHTML = `<p class="muted">This game has no recorded hands.</p>`;
       return;
@@ -180,6 +180,14 @@
         row.classList.add("active");
         activeRow = row;
         loadHandDetail(gameId, h.round_count);
+        // Fetch hand context for coach and load it into the global coach panel.
+        api(`/api/games/${gameId}/hands/${h.round_count}/context`)
+          .then((ctx) => {
+            if (_globalCoach && ctx && ctx.context) {
+              _globalCoach.setHandContext(gameId, h.round_count, ctx.context);
+            }
+          })
+          .catch(() => {});
       };
       list.appendChild(row);
     });
@@ -188,6 +196,8 @@
     const targetRound = autoRound || data.hands[0].round_count;
     const target = list.querySelector(`[data-round="${targetRound}"]`);
     if (target) target.click();
+
+    wireCoachBtns(gameId, true);
   }
 
   // Phrase one action as "name action amount" (hero shown as "you").
@@ -310,6 +320,7 @@
     screen("create");
     const $ = (id) => document.getElementById(id);
     $("create-back").onclick = () => (location.hash = "#/");
+    wireCoachBtns(null);
 
     const sb = $("cfg-sb"), bb = $("cfg-bb");
     sb.addEventListener("input", () => { bb.value = (+sb.value || 0) * 2; }); // keep BB = 2*SB
@@ -383,7 +394,6 @@
   function showTable(gameId) {
     if (!state.user) { location.hash = "#/login"; return; }
     screen("table");
-    document.getElementById("leave-game").onclick = () => (location.hash = "#/");
     const wsUrl = sessionStorage.getItem("pt_ws_" + gameId) || `/ws/games/${gameId}`;
     window.PokerTable.mount(gameId, wsUrl);
   }
@@ -393,6 +403,7 @@
     screen("profile");
     const $ = (id) => document.getElementById(id);
     $("profile-back").onclick = () => (location.hash = "#/");
+    wireCoachBtns(null);
 
     let p;
     try { p = await api("/api/profile"); }
@@ -436,6 +447,166 @@
     };
   }
 
+  // ---------- global coach panel ----------
+  let _globalCoach = null;
+
+  function initGlobalCoach() {
+    const panel = document.getElementById("global-coach-panel");
+    document.getElementById("global-coach-close").onclick = () => panel.classList.add("hidden");
+    _globalCoach = new CoachBox(
+      document.getElementById("global-coach-messages"),
+      document.getElementById("global-coach-form"),
+      document.getElementById("global-coach-input"),
+      null,
+    );
+  }
+
+  function toggleGlobalCoach() {
+    document.getElementById("global-coach-panel").classList.toggle("hidden");
+  }
+
+  // Wire every topbar AI Coach button (called after each screen() render).
+  // Pass isHandScreen=true when on game-hands so hand context is preserved.
+  function wireCoachBtns(gameId, isHandScreen) {
+    if (_globalCoach) {
+      _globalCoach.gameId = gameId || null;
+    }
+    document.querySelectorAll(".topbar-coach-btn").forEach((btn) => {
+      // table.js owns toggle-panel; skip it here
+      if (btn.id === "toggle-panel") return;
+      btn.onclick = toggleGlobalCoach;
+    });
+  }
+
+  // ---------- markdown helper ----------
+  function markdownToHTML(text) {
+    let html = text
+      // Bold: **text** → <strong>text</strong>
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      // Italic: *text* → <em>text</em>
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      // Code: `text` → <code>text</code>
+      .replace(/`(.+?)`/g, "<code>$1</code>")
+      // Headers: # text → <h3>text</h3>, ## text → <h4>text</h4>
+      .replace(/^### (.+?)$/gm, "<h5>$1</h5>")
+      .replace(/^## (.+?)$/gm, "<h4>$1</h4>")
+      .replace(/^# (.+?)$/gm, "<h3>$1</h3>")
+      // Line breaks: \n → <br/>
+      .replace(/\n/g, "<br/>");
+    // Sanitize: remove any potentially dangerous HTML
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    // Remove any script tags and event handlers
+    div.querySelectorAll("script").forEach(s => s.remove());
+    return div.innerHTML;
+  }
+
+  // ---------- coach chat (shared SSE helper) ----------
+  class CoachBox {
+    constructor(messagesEl, formEl, inputEl, gameId) {
+      this.messagesEl = messagesEl;
+      this.gameId = gameId;
+      this.conversationId = null;
+      formEl.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const text = (inputEl.value || "").trim();
+        if (!text) return;
+        inputEl.value = "";
+        this.send(text);
+      });
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          formEl.dispatchEvent(new Event("submit"));
+        }
+      });
+    }
+
+    // Load context for a new hand: creates a fresh conversation with the hand
+    // text pinned server-side, clears the UI, and shows a banner.
+    async setHandContext(gameId, roundCount, contextText) {
+      this.gameId = gameId;
+      this.conversationId = null;
+      this.messagesEl.innerHTML = "";
+      const banner = document.createElement("div");
+      banner.className = "coach-hand-banner";
+      banner.textContent = `Hand #${roundCount} loaded — ask the coach anything about this hand.`;
+      this.messagesEl.appendChild(banner);
+      try {
+        const res = await api("/api/coach/conversations", {
+          method: "POST",
+          body: JSON.stringify({ game_id: gameId, pinned_context: contextText }),
+        });
+        this.conversationId = res.conversation_id;
+      } catch (e) {
+        banner.textContent += " (context unavailable)";
+      }
+    }
+
+    append(role, text, streaming) {
+      const el = document.createElement("div");
+      el.className = "coach-msg " + (role === "user" ? "coach-user" : "coach-assistant");
+      if (streaming) el.classList.add("coach-streaming");
+      if (role === "user") {
+        el.textContent = text;
+      } else {
+        el.innerHTML = markdownToHTML(text);
+      }
+      this.messagesEl.appendChild(el);
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+      return el;
+    }
+
+    async send(text) {
+      this.append("user", text, false);
+      const bubbleEl = this.append("assistant", "…", true);
+      const body = {
+        message: text,
+        game_id: this.gameId || null,
+        conversation_id: this.conversationId || null,
+      };
+      try {
+        const res = await fetch("/api/coach/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "", fullText = "";
+        bubbleEl.innerHTML = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === "chunk") {
+              fullText += payload.text;
+              bubbleEl.innerHTML = markdownToHTML(fullText);
+              this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+            } else if (payload.type === "done") {
+              this.conversationId = payload.conversation_id;
+              bubbleEl.classList.remove("coach-streaming");
+            } else if (payload.type === "error") {
+              bubbleEl.textContent = "Error: " + payload.message;
+              bubbleEl.classList.remove("coach-streaming");
+              bubbleEl.classList.add("coach-error");
+            }
+          }
+        }
+      } catch (err) {
+        bubbleEl.textContent = "Error: " + err.message;
+        bubbleEl.classList.remove("coach-streaming");
+        bubbleEl.classList.add("coach-error");
+      }
+    }
+  }
+
   function clamp(v, lo, hi) { v = parseInt(v, 10); if (isNaN(v)) v = lo; return Math.max(lo, Math.min(v, hi)); }
 
   // ---------- router ----------
@@ -456,5 +627,6 @@
   }
 
   window.addEventListener("hashchange", route);
+  initGlobalCoach();
   route();
 })();

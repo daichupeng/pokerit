@@ -13,9 +13,9 @@ class TAGBot(StyleBot):
     def __init__(self, seed: int | None = None, **overrides: float):
         params = StyleParams(
             tightness=0.58,
-            aggression=0.75,
+            aggression=0.85,
             bluff_freq=0.07,
-            raise_sizing=1.5,
+            raise_sizing=2.5,
             nb_simulation=10000,
         )
         _apply(params, overrides)
@@ -29,10 +29,10 @@ class LAGBot(StyleBot):
 
     def __init__(self, seed: int | None = None, **overrides: float):
         params = StyleParams(
-            tightness=0.20,
+            tightness=0.15,
             aggression=0.85,
-            bluff_freq=0.22,
-            raise_sizing=2,
+            bluff_freq=0.20,
+            raise_sizing=2.5,
             nb_simulation=10000
         )
         _apply(params, overrides)
@@ -46,9 +46,9 @@ class CallingStationBot(StyleBot):
 
     def __init__(self, seed: int | None = None, **overrides: float):
         params = StyleParams(
-            tightness=0.15,
+            tightness=0.10,
             aggression=0.10,
-            bluff_freq=0.02,
+            bluff_freq=0.15,
             raise_sizing=0.4,
             nb_simulation=10000,
         )

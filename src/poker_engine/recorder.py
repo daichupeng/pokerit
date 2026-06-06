@@ -147,7 +147,7 @@ class PerspectiveRecorder:
         self._current = hand
         self._hands.append(hand)
 
-    def _record_round_result(self, winners, hand_info, round_state):
+    def _record_round_result(self, winners, hand_info, round_state, revealed_uuids: set[str] | None = None):
         hand = self._current
         if hand is None:
             return
@@ -159,7 +159,7 @@ class PerspectiveRecorder:
         hand.street_reached = _street(round_state.get("street"))
         hand.pot = round_state.get("pot")
         hand.pot_total = _pot_total(hand.pot)
-        hand.had_showdown = bool(hand_info)
+        hand.had_showdown = bool(revealed_uuids) if revealed_uuids is not None else bool(hand_info)
         hand.winners = {w["uuid"] for w in winners}
         hand.final_stacks = {s["uuid"]: s["stack"] for s in round_state.get("seats", [])}
 
@@ -168,16 +168,13 @@ class PerspectiveRecorder:
         if self._hero_uuid:
             hand.revealed_cards[self._hero_uuid] = list(hand.hero_hole)
 
-        # All players' hole cards: including both revealed and unrevealed (stored but not shown in UI).
-        # hand_info comes from PokerKit state.hole_cards and contains all players with non-empty hole cards.
+        # All players' hole cards: store all (including folded), but only mark as revealed
+        # those who actually showed their cards at showdown (passed in revealed_uuids).
         for entry in hand_info or []:
             cards = _extract_hole(entry)
             if cards is not None:
                 hand.all_hole_cards[entry["uuid"]] = cards
-                # Also add to revealed_cards if it's a showdown participant (not the hero).
-                # The hero's cards are handled above. In a showdown, all remaining players
-                # reveal their cards, so any cards in all_hole_cards (except hero) are revealed.
-                if entry["uuid"] != self._hero_uuid:
+                if entry["uuid"] != self._hero_uuid and (revealed_uuids is None or entry["uuid"] in revealed_uuids):
                     hand.revealed_cards[entry["uuid"]] = cards
 
         hand.actions = self._flatten_actions(round_state.get("action_histories", {}))

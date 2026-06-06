@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from poker_trainer.api import auth, games, profile
+from poker_trainer.api import auth, coach, games, profile
 from poker_trainer.auth import config as auth_config
 from poker_trainer.ws import router as ws_router
 
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(profile.router)
 app.include_router(games.router)
+app.include_router(coach.router)
 app.include_router(ws_router)
 
 

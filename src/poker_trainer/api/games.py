@@ -430,6 +430,22 @@ def hand_detail(
     }
 
 
+@router.get("/games/{game_id}/hands/{round_count}/context")
+def hand_context_text(
+    game_id: str,
+    round_count: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return a plain-text coach context string for one hand."""
+    from shared_services.hand_formatter import format_hand
+
+    game = _load_owned_game(db, game_id, user)
+    detail = hand_detail(game_id, round_count, user, db)
+    text = format_hand(detail, game.small_blind, game.big_blind)
+    return {"context": text, "round_count": round_count}
+
+
 @router.get("/games/{game_id}/state")
 def game_state(game_id: str) -> dict:
     session = manager.get(game_id)

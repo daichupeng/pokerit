@@ -9,6 +9,20 @@
 <body>
   <div id="app"></div>
 
+  <!-- ===== Global coach panel (persists across all page navigations) ===== -->
+  <aside id="global-coach-panel" class="global-coach-panel hidden">
+    <div class="global-coach-head">
+      <span>AI Coach</span>
+      <button id="global-coach-close" class="global-coach-close" title="Close">✕</button>
+    </div>
+    <div id="global-coach-messages" class="coach-messages"></div>
+    <form id="global-coach-form" class="coach-input-row">
+      <textarea id="global-coach-input" class="coach-input" rows="2"
+        placeholder="Ask your coach…"></textarea>
+      <button type="submit" class="btn primary tiny">Send</button>
+    </form>
+  </aside>
+
   <!-- ===== Screen templates (cloned by the router) ===== -->
 
   <template id="screen-login">
@@ -31,13 +45,11 @@
   <template id="screen-main">
     <section class="screen">
       <header class="topbar">
-        <h1 class="brand small">♠ Poker Trainer</h1>
-        <div class="profile-chip">
-          <img id="profile-avatar" class="avatar" alt="" />
-          <span id="profile-name">Guest</span>
-          <button id="go-profile" class="btn tiny ghost">Profile</button>
-          <button id="logout-btn" class="btn tiny ghost">Log out</button>
-        </div>
+        <button class="topbar-home">♠ Poker Trainer</button>
+        <button id="main-toggle-coach" class="topbar-coach-btn" title="Coach">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt="" />
+          AI Coach
+        </button>
       </header>
       <div class="main-body">
         <div class="hero-actions">
@@ -53,6 +65,16 @@
             <p class="muted">Loading…</p>
           </div>
         </div>
+        <div class="card-panel">
+          <div class="profile-row">
+            <img id="profile-avatar" class="avatar" alt="" />
+            <span id="profile-name" class="profile-name-text">Guest</span>
+          </div>
+          <div class="row">
+            <button id="go-profile" class="btn ghost">Edit profile</button>
+            <button id="logout-btn" class="btn ghost">Log out</button>
+          </div>
+        </div>
       </div>
     </section>
   </template>
@@ -60,8 +82,11 @@
   <template id="screen-create">
     <section class="screen">
       <header class="topbar">
-        <h1 class="brand small">♠ New game</h1>
-        <button id="create-back" class="btn ghost tiny">← Back</button>
+        <button id="create-back" class="topbar-home">♠ Poker Trainer</button>
+        <button class="topbar-coach-btn" title="Coach">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt="" />
+          AI Coach
+        </button>
       </header>
       <div class="main-body">
         <div class="card-panel form-grid">
@@ -118,8 +143,11 @@
   <template id="screen-profile">
     <section class="screen">
       <header class="topbar">
-        <h1 class="brand small">♠ Profile</h1>
-        <button id="profile-back" class="btn ghost tiny">← Back</button>
+        <button id="profile-back" class="topbar-home">♠ Poker Trainer</button>
+        <button class="topbar-coach-btn" title="Coach">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt="" />
+          AI Coach
+        </button>
       </header>
       <div class="main-body">
         <div class="card-panel">
@@ -167,8 +195,11 @@
   <template id="screen-history">
     <section class="screen">
       <header class="topbar">
-        <h1 class="brand small">♠ Game history</h1>
-        <button id="history-back" class="btn ghost tiny">← Back</button>
+        <button id="history-back" class="topbar-home">♠ Poker Trainer</button>
+        <button class="topbar-coach-btn" title="Coach">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt="" />
+          AI Coach
+        </button>
       </header>
       <div class="main-body">
         <div class="card-panel">
@@ -184,9 +215,11 @@
   <template id="screen-game-hands">
     <section class="screen hands-screen">
       <header class="topbar">
-        <h1 class="brand small">♠ Game</h1>
-        <button id="hands-back" class="btn ghost tiny">← Back</button>
-        <span id="hands-summary" class="muted tiny"></span>
+        <button id="hands-back" class="topbar-home">♠ Poker Trainer</button>
+        <button id="history-toggle-coach" class="topbar-coach-btn" title="Ask Coach">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt="" />
+          AI Coach
+        </button>
       </header>
       <div class="hands-split">
         <div class="hands-sidebar">
@@ -206,13 +239,15 @@
   <template id="screen-table">
     <section class="screen table-screen">
       <header class="topbar">
-        <h1 class="brand small">♠ Poker Trainer</h1>
-        <div class="table-meta">
+        <button id="topbar-home" class="topbar-home">♠ Poker Trainer</button>
+        <div class="topbar-center">
           <span id="table-blinds"></span>
           <span id="table-hand"></span>
-          <button id="leave-game" class="btn ghost tiny">Leave</button>
-          <button id="toggle-panel" class="btn ghost tiny">Stats ▸</button>
         </div>
+        <button id="toggle-panel" class="topbar-coach-btn" title="Coach">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt=""/>
+          AI Coach
+        </button>
       </header>
 
       <div class="table-layout">
@@ -243,17 +278,30 @@
 
         <aside id="side-panel" class="side-panel hidden">
           <div class="tabs">
+            <button class="tab" data-tab="coach">
+              <img src="/static/assets/ai_coach_icon.png" class="tab-icon" alt="Coach" />
+              Coach
+            </button>
             <button class="tab active" data-tab="stats">Stats</button>
             <button class="tab" data-tab="hands">Hands</button>
+
           </div>
           <div id="tab-stats" class="tab-body"></div>
           <div id="tab-hands" class="tab-body hidden"></div>
+          <div id="tab-coach" class="tab-body hidden coach-panel">
+            <div id="coach-messages" class="coach-messages"></div>
+            <form id="coach-form" class="coach-input-row">
+              <textarea id="coach-input" class="coach-input" rows="2"
+                placeholder="Ask your coach…"></textarea>
+              <button type="submit" class="btn primary tiny">Send</button>
+            </form>
+          </div>
         </aside>
       </div>
     </section>
   </template>
 
-  <script src="/static/js/table.js?v=3"></script>
-  <script src="/static/js/app.js?v=3"></script>
+  <script src="/static/js/table.js?v=4"></script>
+  <script src="/static/js/app.js?v=4"></script>
 </body>
 </html>

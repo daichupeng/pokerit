@@ -411,7 +411,7 @@ class GameSession:
             community=community,
             final_stacks=self._stacks,
         )
-        self.recorder._record_round_result(winner_dicts, hand_info, round_state_dict)
+        self.recorder._record_round_result(winner_dicts, hand_info, round_state_dict, revealed_uuids=set(revealed.keys()))
 
         # Build the view with hero hole cards preserved
         final_view = self._build_view(hero_hole_override=hero_hole, community_override=community)

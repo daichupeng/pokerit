@@ -121,9 +121,14 @@
       document.querySelectorAll("[data-quick]").forEach((b) =>
         b.addEventListener("click", () => this.quick(b.dataset.quick)));
 
+      document.getElementById("topbar-home").addEventListener("click", () => {
+        window.location.hash = "#/main";
+      });
+
       document.getElementById("toggle-panel").addEventListener("click", () => {
         const p = document.getElementById("side-panel");
-        p.classList.toggle("hidden");
+        const isHidden = p.classList.toggle("hidden");
+        if (!isHidden) this.switchTab("coach");
       });
       document.querySelectorAll(".tab").forEach((t) =>
         t.addEventListener("click", () => this.switchTab(t.dataset.tab)));
@@ -580,6 +585,95 @@
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
       document.getElementById("tab-stats").classList.toggle("hidden", name !== "stats");
       document.getElementById("tab-hands").classList.toggle("hidden", name !== "hands");
+      document.getElementById("tab-coach").classList.toggle("hidden", name !== "coach");
+    }
+
+    // ---- coach chat ----
+    initCoach(gameId) {
+      this._coachGameId = gameId;
+      this._coachConversationId = null;
+      const form = document.getElementById("coach-form");
+      if (!form) return;
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const input = document.getElementById("coach-input");
+        const text = (input.value || "").trim();
+        if (!text) return;
+        input.value = "";
+        this.coachSend(text);
+      });
+      // Allow Shift+Enter for newline, plain Enter to submit.
+      document.getElementById("coach-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          document.getElementById("coach-form").dispatchEvent(new Event("submit"));
+        }
+      });
+    }
+
+    coachAppend(role, text, streaming) {
+      const box = document.getElementById("coach-messages");
+      if (!box) return null;
+      const el = document.createElement("div");
+      el.className = "coach-msg " + (role === "user" ? "coach-user" : "coach-assistant");
+      if (streaming) el.classList.add("coach-streaming");
+      el.textContent = text;
+      box.appendChild(el);
+      box.scrollTop = box.scrollHeight;
+      return el;
+    }
+
+    async coachSend(text) {
+      this.coachAppend("user", text, false);
+      const bubbleEl = this.coachAppend("assistant", "…", true);
+
+      const body = {
+        message: text,
+        game_id: this._coachGameId || null,
+        conversation_id: this._coachConversationId || null,
+      };
+      try {
+        const res = await fetch("/api/coach/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "", fullText = "";
+        bubbleEl.textContent = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === "chunk") {
+              fullText += payload.text;
+              bubbleEl.textContent = fullText;
+              const box = document.getElementById("coach-messages");
+              if (box) box.scrollTop = box.scrollHeight;
+            } else if (payload.type === "done") {
+              this._coachConversationId = payload.conversation_id;
+              bubbleEl.classList.remove("coach-streaming");
+            } else if (payload.type === "error") {
+              bubbleEl.textContent = "Error: " + payload.message;
+              bubbleEl.classList.remove("coach-streaming");
+              bubbleEl.classList.add("coach-error");
+            }
+          }
+        }
+      } catch (err) {
+        if (bubbleEl) {
+          bubbleEl.textContent = "Error: " + err.message;
+          bubbleEl.classList.remove("coach-streaming");
+          bubbleEl.classList.add("coach-error");
+        }
+      }
     }
 
     setMessage(text) { this.$message.textContent = text; }
@@ -609,6 +703,7 @@
     mount(gameId, wsUrl) {
       const ui = new TableUI(gameId, wsUrl);
       ui.connect();
+      ui.initCoach(gameId);
       window.__ptui = ui;  // exposed for debugging/testing
       return ui;
     },
