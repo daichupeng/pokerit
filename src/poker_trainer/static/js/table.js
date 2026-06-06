@@ -5,8 +5,9 @@
 (function () {
   "use strict";
 
-  const SUIT = { S: { g: "♠", c: "black" }, H: { g: "♥", c: "red" },
-                 D: { g: "♦", c: "red" }, C: { g: "♣", c: "black" } };
+  // Card format: rank+suit lowercase, e.g. "As", "Tc", "2h"
+  const SUIT = { s: { g: "♠", c: "black" }, h: { g: "♥", c: "red" },
+                 d: { g: "♦", c: "red" }, c: { g: "♣", c: "black" } };
 
   function cardEl(code, opts) {
     opts = opts || {};
@@ -14,8 +15,8 @@
     el.className = "pcard" + (opts.hero ? " hero" : opts.lg ? " lg" : "") + (opts.dimmed ? " dimmed" : "");
     if (!code) { el.classList.add("placeholder"); return el; }
     if (code === "back") { el.classList.add("back"); return el; }
-    // code like "SK", "HТ"(T=10), "D2"
-    const suit = code[0], rank = code.slice(1).replace("T", "10");
+    // code like "As", "Tc", "2h"
+    const rank = code[0].replace("T", "10"), suit = code[1];
     const s = SUIT[suit] || { g: "?", c: "black" };
     el.classList.add(s.c);
     // Rank in the top-left corner; a single suit symbol in the center.
@@ -42,12 +43,19 @@
     // gap reserved for the hero at the bottom. Every seat shows cards on top of
     // its plate, so the top rows sit low enough that those upward-facing cards
     // stay on the felt (don't clip over the top rail).
+    // Positions go clockwise from hero (bottom-center): next seat is bottom-right,
+    // then right, top-right, top-left, left, bottom-left.
+    // All layouts: hero at index 0 (bottom-center), remaining seats clockwise.
+    // Clockwise from hero: bottom-right → right → top-right → top → top-left → left → bottom-left.
     const layouts = {
       2: [[50, 90], [50, 26]],
-      3: [[50, 90], [12, 40], [88, 40]],
-      4: [[50, 90], [8, 56], [50, 26], [92, 56]],
-      6: [[50, 90], [12, 74], [7, 34], [30, 12], [70, 12], [93, 34], [88, 74]],
-      9: [[50, 90], [20, 83], [3, 52], [11, 22], [33, 8], [67, 8], [89, 22], [97, 52], [80, 83]],
+      3: [[50, 90], [88, 40], [12, 40]],
+      4: [[50, 90], [92, 56], [50, 26], [8, 56]],
+      5: [[50, 90], [92, 65], [80, 16], [20, 16], [8, 65]],
+      6: [[50, 90], [93, 56], [88, 22], [50, 10], [12, 22], [7, 56]],
+      7: [[50, 90], [88, 74], [93, 34], [70, 12], [30, 12], [7, 34], [12, 74]],
+      8: [[50, 90], [82, 78], [97, 46], [84, 14], [50, 8], [16, 14], [3, 46], [18, 78]],
+      9: [[50, 90], [80, 83], [97, 52], [89, 22], [67, 8], [33, 8], [11, 22], [3, 52], [20, 83]],
     };
     if (layouts[n]) return layouts[n];
     // fallback: evenly distribute the bots around the ring, hero at bottom.
@@ -56,9 +64,11 @@
     // the top of the ring low enough for the upward cards.
     const pos = [[50, 90]];
     const span = 2 * Math.PI * (290 / 360);
-    const start = -Math.PI / 2 - span / 2; // centered opposite the hero
+    // Arc spans 290° centered at top of oval. Start at bottom-right (t = π/2 − span/2)
+    // and increment t so seats go clockwise: bottom-right → right → top → left → bottom-left.
+    const start = Math.PI / 2 - span / 2;
     for (let i = 1; i < n; i++) {
-      const t = start + (span * (i - 1)) / (n - 2);
+      const t = start + (span * (i - 1)) / Math.max(n - 2, 1);
       pos.push([50 + 44 * Math.cos(t), 42 - 34 * Math.sin(t)]);
     }
     return pos;
@@ -163,7 +173,7 @@
           // winner's unused cards. Cleared by the next non-showdown render.
           this.showdown = {};
           (ev.showdown || []).forEach((s) => (this.showdown[s.uuid] = s));
-          this.winnerUuids = new Set((ev.winners || []).map((w) => w.uuid));
+          this.winnerUuids = new Set((ev.winners || []).map((w) => typeof w === "string" ? w : w.uuid));
           if (ev.view) this.render(ev.view);
           this.revealShowdown(ev.revealed);
           this.recordHand(ev);
@@ -244,10 +254,18 @@
       }
       this.$pot.innerHTML = lines.map((l) => `<div class="pot-line">${l}</div>`).join("");
 
-      // seats
+      // seats — rotate so hero is always at position 0 (bottom-center), then
+      // proceed clockwise around the table.
       this.$seats.innerHTML = "";
       this.seatEls = {};  // uuid -> {el, x, y} for the pot-award animation
-      view.seats.forEach((seat, i) => {
+      // Rotate hero to index 0, then reverse the remaining seats so they go
+      // left-first on screen (SB to hero's left), matching poker's clockwise action.
+      const heroIdx = view.seats.findIndex((s) => s.is_hero);
+      const shifted = heroIdx <= 0 ? view.seats
+        : [...view.seats.slice(heroIdx), ...view.seats.slice(0, heroIdx)];
+      const rotatedSeats = shifted.length <= 1 ? shifted
+        : [shifted[0], ...shifted.slice(1).reverse()];
+      rotatedSeats.forEach((seat, i) => {
         const [x, y] = this.seatPos[i] || [50, 50];
         const el = document.createElement("div");
         el.className = "seat" + (seat.state === "folded" ? " folded" : "") + (seat.is_hero ? " hero-seat" : "");
@@ -350,7 +368,8 @@
     announceWinners(winners, view) {
       if (!winners || !view) return;
       const names = winners.map((w) => {
-        const s = view.seats.find((x) => x.uuid === w.uuid);
+        const uuid = typeof w === "string" ? w : w.uuid;
+        const s = view.seats.find((x) => x.uuid === uuid);
         return s ? s.name : "?";
       });
       this.setMessage(`Winner: ${names.join(", ")}`);
@@ -509,7 +528,8 @@
       const board = (v.community_card || []).slice();
       const hero = v.seats.find((s) => s.is_hero);
       const winnerNames = (ev.winners || []).map((w) => {
-        const s = v.seats.find((x) => x.uuid === w.uuid); return s ? s.name : "?";
+        const uuid = typeof w === "string" ? w : w.uuid;
+        const s = v.seats.find((x) => x.uuid === uuid); return s ? s.name : "?";
       });
       this.hands.push({
         n: v.round_count, board,
@@ -522,7 +542,7 @@
       v.seats.forEach((s) => {
         const st = (this.stats[s.uuid] = this.stats[s.uuid] || { name: s.name, played: 0, won: 0 });
         st.played += 1;
-        if ((ev.winners || []).some((w) => w.uuid === s.uuid)) st.won += 1;
+        if ((ev.winners || []).some((w) => (typeof w === "string" ? w : w.uuid) === s.uuid)) st.won += 1;
       });
       this.renderStats(); this.renderHands();
     }
@@ -539,11 +559,14 @@
     renderHands() {
       const el = document.getElementById("tab-hands");
       el.innerHTML = this.hands.slice().reverse().map((h) => {
-        const board = h.board.map((c) => `<span class="pcard">${suitGlyph(c)}</span>`).join("");
-        const heroC = (h.heroCards || []).join(" ") || "—";
+        const board = h.board.map((c) => cardInline(c)).join(" ");
+        const heroC = h.heroCards && h.heroCards.length
+          ? h.heroCards.map((c) => cardInline(c)).join(" ")
+          : "—";
         const reveals = Object.entries(h.revealed).map(([u, c]) => {
           const nm = (h.seats.find((s) => s.uuid === u) || {}).name || "?";
-          return `${esc(nm)}: ${c.join(" ")}`;
+          const cards = c.map((x) => cardInline(x)).join(" ");
+          return `${esc(nm)}: ${cards}`;
         }).join(" · ");
         return `<div class="hand-entry"><b>Hand #${h.n}</b>` +
           `<div class="board">${board || '<span class="muted tiny">no board</span>'}</div>` +
@@ -571,8 +594,12 @@
     return m + s;
   }
   function suitGlyph(code) {
-    const s = SUIT[code[0]] || { g: "?" }; const r = code.slice(1).replace("T", "10");
+    const r = code[0].replace("T", "10"), s = SUIT[code[1]] || { g: "?" };
     return `${r}${s.g}`;
+  }
+  function cardInline(code) {
+    const s = SUIT[code[1]] || { g: "?", c: "black" };
+    return `<span class="suit-${s.c}">${suitGlyph(code)}</span>`;
   }
   function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
   function trim(n) { return Number.isInteger(n) ? String(n) : String(+(+n).toFixed(2)); }

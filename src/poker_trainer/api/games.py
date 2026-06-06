@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from poker_engine import hand_eval
+from poker_engine import pk_adapter
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
 from poker_engine.db.models import Game, GamePlayer, Hand, User
 from poker_trainer.auth.deps import get_db, require_user
@@ -293,10 +293,9 @@ def hand_detail(
         if hp.starting_stack is not None:
             start_stack[hp.game_player_id] = hp.starting_stack
 
-    # PyPokerEngine stores action amounts as the *cumulative total* a player has
-    # committed on that street (not the incremental size of that action). Track
-    # the last-seen cumulative total per player so we can compute the delta for
-    # stack accounting and detect all-ins correctly.
+    # Action amounts are the *cumulative total* a player has committed on that
+    # street (not the incremental size). Track last-seen total per player to
+    # compute the delta for stack accounting and detect all-ins.
     #
     # cumulative_committed[gp_id] = total chips this player has put in across
     # all streets so far (updated at each street boundary and after each action).
@@ -403,7 +402,7 @@ def hand_detail(
             name = gp.display_name if gp else "?"
             is_hero = hp.game_player_id == hero_gp_id
             try:
-                best = hand_eval.best_five(list(hp.hole_cards), board)
+                best = pk_adapter.best_five(list(hp.hole_cards), board)
                 label = best.get("label", "")
             except Exception:
                 label = ""

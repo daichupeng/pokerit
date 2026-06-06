@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api *)",
+      "Bash(pip show *)",
+      "Bash(curl -s http://localhost:8001/healthz)",
+      "Bash(kill %1)",
+      "Bash(curl -s http://localhost:8000/healthz)"
+    ]
+  }
+}

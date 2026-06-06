@@ -37,12 +37,23 @@ services:
     volumes:
       - ./src:/app/src
       - ./scripts:/app/scripts
-      # The vendored (patched) PyPokerEngine is editable-installed, so mount it
-      # too — otherwise the container uses the copy baked into the image.
-      - ./vendor:/app/vendor
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
       - /app/.venv
     ports:
       - "8000:8000"
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
+

@@ -64,7 +64,9 @@ class _HandRecord:
     pot: dict | None = None
     had_showdown: bool = False
     actions: list[_ActionRecord] = field(default_factory=list)
-    # engine_uuid -> hole cards, ONLY for seats whose cards are known to hero.
+    # engine_uuid -> hole cards, for all players (revealed at showdown or not).
+    all_hole_cards: dict[str, list[str]] = field(default_factory=dict)
+    # engine_uuid -> hole cards, ONLY for seats whose cards are known to hero (shown in UI).
     revealed_cards: dict[str, list[str]] = field(default_factory=dict)
     winners: set[str] = field(default_factory=set)
     final_stacks: dict[str, int] = field(default_factory=dict)
@@ -166,13 +168,17 @@ class PerspectiveRecorder:
         if self._hero_uuid:
             hand.revealed_cards[self._hero_uuid] = list(hand.hero_hole)
 
-        # Opponents' cards: ONLY those revealed at showdown (present in hand_info).
-        # Our vendored PyPokerEngine adds exact "hole_card" strings to each
-        # showdown entry; folded/unrevealed seats never appear here.
+        # All players' hole cards: including both revealed and unrevealed (stored but not shown in UI).
+        # hand_info comes from PokerKit state.hole_cards and contains all players with non-empty hole cards.
         for entry in hand_info or []:
             cards = _extract_hole(entry)
             if cards is not None:
-                hand.revealed_cards[entry["uuid"]] = cards
+                hand.all_hole_cards[entry["uuid"]] = cards
+                # Also add to revealed_cards if it's a showdown participant (not the hero).
+                # The hero's cards are handled above. In a showdown, all remaining players
+                # reveal their cards, so any cards in all_hole_cards (except hero) are revealed.
+                if entry["uuid"] != self._hero_uuid:
+                    hand.revealed_cards[entry["uuid"]] = cards
 
         hand.actions = self._flatten_actions(round_state.get("action_histories", {}))
         self._current = None
@@ -384,7 +390,10 @@ class PerspectiveRecorder:
         for uuid_, gp in gp_by_uuid.items():
             start = hand_rec.starting_stacks.get(uuid_)
             final = hand_rec.final_stacks.get(uuid_)
-            cards = hand_rec.revealed_cards.get(uuid_)  # None unless known to hero
+            # Store all hole cards (both revealed and unrevealed)
+            cards = hand_rec.all_hole_cards.get(uuid_)
+            # A player's cards are "revealed" only if they were shown in the UI (hero or showdown)
+            is_revealed = uuid_ in hand_rec.revealed_cards
             won = uuid_ in hand_rec.winners
             amount_won = (final - start) if (final is not None and start is not None) else 0
             session.add(
@@ -392,7 +401,7 @@ class PerspectiveRecorder:
                     hand=hand,
                     game_player=gp,
                     hole_cards=cards,
-                    revealed=cards is not None,
+                    revealed=is_revealed,
                     is_winner=won,
                     amount_won=amount_won,
                     starting_stack=start,

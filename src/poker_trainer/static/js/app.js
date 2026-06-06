@@ -84,13 +84,14 @@
   }
 
   // ---------- history helpers ----------
-  const SUIT = { S: { g: "♠", c: "black" }, H: { g: "♥", c: "red" },
-                 D: { g: "♦", c: "red" }, C: { g: "♣", c: "black" } };
+  // Card format: rank+suit lowercase, e.g. "As", "Tc", "2h"
+  const SUIT = { s: { g: "♠", c: "black" }, h: { g: "♥", c: "red" },
+                 d: { g: "♦", c: "red" }, c: { g: "♣", c: "black" } };
 
-  // Render a card code ("SK", "HT") as an inline colored glyph, e.g. ♥K.
+  // Render a card code ("As", "Tc") as an inline colored glyph, e.g. A♠.
   function cardHTML(code) {
     if (!code) return "";
-    const suit = code[0], rank = code.slice(1).replace("T", "10");
+    const rank = code[0].replace("T", "10"), suit = code[1];
     const s = SUIT[suit] || { g: "?", c: "black" };
     return `<span class="suit-${s.c}">${rank}${s.g}</span>`;
   }

@@ -1,5 +1,5 @@
 """Poker game engine: management, bots, and perspective-based recording
-built on top of PyPokerEngine."""
+built on top of PokerKit."""
 
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
 from poker_engine.engine import GameEngine, GameResult

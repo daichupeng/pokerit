@@ -15,7 +15,8 @@ class TAGBot(StyleBot):
             tightness=0.58,
             aggression=0.75,
             bluff_freq=0.07,
-            raise_sizing=0.7,
+            raise_sizing=1.5,
+            nb_simulation=10000,
         )
         _apply(params, overrides)
         super().__init__(params, seed=seed)
@@ -28,10 +29,11 @@ class LAGBot(StyleBot):
 
     def __init__(self, seed: int | None = None, **overrides: float):
         params = StyleParams(
-            tightness=0.42,
+            tightness=0.20,
             aggression=0.85,
             bluff_freq=0.22,
-            raise_sizing=0.85,
+            raise_sizing=2,
+            nb_simulation=10000
         )
         _apply(params, overrides)
         super().__init__(params, seed=seed)
@@ -44,10 +46,11 @@ class CallingStationBot(StyleBot):
 
     def __init__(self, seed: int | None = None, **overrides: float):
         params = StyleParams(
-            tightness=0.40,
+            tightness=0.15,
             aggression=0.10,
             bluff_freq=0.02,
             raise_sizing=0.4,
+            nb_simulation=10000,
         )
         _apply(params, overrides)
         super().__init__(params, seed=seed)
@@ -64,6 +67,7 @@ class RockBot(StyleBot):
             aggression=0.55,
             bluff_freq=0.0,
             raise_sizing=0.6,
+            nb_simulation=10000,
         )
         _apply(params, overrides)
         super().__init__(params, seed=seed)

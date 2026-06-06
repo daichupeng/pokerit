@@ -1,7 +1,0 @@
-*.pyc
-*.swp
-*.egg-info
-.pypirc
-dist
-build
-docs/site/*

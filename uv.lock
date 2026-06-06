@@ -314,8 +314,9 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "itsdangerous" },
+    { name = "pokerkit" },
     { name = "psycopg", extra = ["binary"] },
-    { name = "pypokerengine" },
+    { name = "python-dotenv" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -327,10 +328,20 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "itsdangerous", specifier = ">=2.2" },
+    { name = "pokerkit", specifier = ">=0.7.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "pypokerengine", editable = "vendor/PyPokerEngine" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+
+[[package]]
+name = "pokerkit"
+version = "0.7.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/b2/c7bf52e69ede8a6297b1779fb8ca3dc37d59c436dac6da263978cc47f7ee/pokerkit-0.7.4.tar.gz", hash = "sha256:df6d69ef0a292b672cd1ef5de2163db50cdac20a2189f700a35d92bcdbcba9ed", size = 109389, upload-time = "2026-05-22T12:05:33.154Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/8f/78d0bec4093f9cf0e5416a772ed18b06057dedacc0a721aab1e80f285d69/pokerkit-0.7.4-py3-none-any.whl", hash = "sha256:4cdb1a0c9dc95409da066682f764282c4e2547f620d4747458f38d28fa7e6761", size = 113684, upload-time = "2026-05-22T12:05:31.991Z" },
 ]
 
 [[package]]
@@ -430,11 +441,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/c3/66883a5cec183e7fba4d024b4cbbe61851a63750ef606b0afecc46d1f2bf/pydantic_core-2.46.4-pp311-pypy311_pp73-musllinux_1_1_x86_64.whl", hash = "sha256:86e1a4418c6cd97d60c95c71164158eaf7324fae7b0923264016baa993eba6fc", size = 2361286, upload-time = "2026-05-06T13:40:05.667Z" },
     { url = "https://files.pythonhosted.org/packages/4b/2d/69abac8f838090bbecd5df894befb2c2619e7996a98ddb949db9f3b93225/pydantic_core-2.46.4-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:d51026d73fcfd93610abc7b27789c26b313920fcfb20e27462d74a7f8b06e983", size = 2193071, upload-time = "2026-05-06T13:38:08.682Z" },
 ]
-
-[[package]]
-name = "pypokerengine"
-version = "1.0.1"
-source = { editable = "vendor/PyPokerEngine" }
 
 [[package]]
 name = "python-dotenv"

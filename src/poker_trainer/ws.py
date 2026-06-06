@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -60,9 +61,9 @@ async def play(websocket: WebSocket, game_id: str) -> None:
         # On (re)connect: send current state, then either the pending hero ask or,
         # if the game hasn't been advanced yet, start it.
         async with lock:
-            first_connect = session._last_round_state is None and not session.finished
+            first_connect = session._last_view is None and not session.finished
             if first_connect:
-                events = session.start()
+                events = await asyncio.to_thread(session.start)
             else:
                 events = []
             await websocket.send_json({
@@ -92,7 +93,9 @@ async def play(websocket: WebSocket, game_id: str) -> None:
             async with lock:
                 if session.finished:
                     break
-                events = session.apply_hero_action(action, amount)
+                events = await asyncio.to_thread(
+                    functools.partial(session.apply_hero_action, action, amount)
+                )
                 await _stream(websocket, events)
                 # Persist after any batch that finished one or more hands.
                 if _ended_a_hand(events):

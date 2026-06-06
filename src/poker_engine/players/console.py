@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from pypokerengine.players import BasePokerPlayer
 
-
-class ConsolePlayer(BasePokerPlayer):
+class ConsolePlayer:
     """Prompts the human at the terminal for each decision.
 
     Input grammar:
@@ -26,7 +24,6 @@ class ConsolePlayer(BasePokerPlayer):
             try:
                 raw = input("Your action [f/c/r <amount>]: ").strip().lower()
             except EOFError:
-                # No interactive stdin available: fall back to call/check.
                 print("(no input — calling)")
                 return "call", call["amount"]
 
@@ -53,8 +50,6 @@ class ConsolePlayer(BasePokerPlayer):
                 return "raise", amount
 
             print("Unrecognized input. Use f, c, or r <amount>.")
-
-    # -- helpers ------------------------------------------------------------
 
     def _parse_raise(self, rest, raise_action) -> int | None:
         bounds = raise_action["amount"]
@@ -92,8 +87,6 @@ class ConsolePlayer(BasePokerPlayer):
         else:
             print("Raise: not allowed")
 
-    # -- lifecycle callbacks (concise table narration) ----------------------
-
     def receive_game_start_message(self, game_info):
         names = [p["name"] for p in game_info.get("seats", [])]
         print(f"\n=== Game start: {', '.join(names)} ===")
@@ -110,7 +103,7 @@ class ConsolePlayer(BasePokerPlayer):
         pass
 
     def receive_round_result_message(self, winners, hand_info, round_state):
-        names = ", ".join(w["name"] for w in winners)
+        names = ", ".join(w.get("name", w.get("uuid", "?")) for w in winners)
         print(f"<<< Round won by: {names}")
 
 
