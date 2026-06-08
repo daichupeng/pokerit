@@ -48,14 +48,14 @@
     // All layouts: hero at index 0 (bottom-center), remaining seats clockwise.
     // Clockwise from hero: bottom-right → right → top-right → top → top-left → left → bottom-left.
     const layouts = {
-      2: [[50, 90], [50, 26]],
-      3: [[50, 90], [88, 40], [12, 40]],
-      4: [[50, 90], [92, 56], [50, 26], [8, 56]],
-      5: [[50, 90], [92, 65], [80, 16], [20, 16], [8, 65]],
-      6: [[50, 90], [93, 56], [88, 22], [50, 10], [12, 22], [7, 56]],
-      7: [[50, 90], [88, 74], [93, 34], [70, 12], [30, 12], [7, 34], [12, 74]],
-      8: [[50, 90], [82, 78], [97, 46], [84, 14], [50, 8], [16, 14], [3, 46], [18, 78]],
-      9: [[50, 90], [80, 83], [97, 52], [89, 22], [67, 8], [33, 8], [11, 22], [3, 52], [20, 83]],
+      2: [[50, 92], [50, 26]],
+      3: [[50, 92], [88, 40], [12, 40]],
+      4: [[50, 92], [92, 56], [50, 26], [8, 56]],
+      5: [[50, 92], [92, 65], [80, 16], [20, 16], [8, 65]],
+      6: [[50, 92], [93, 56], [88, 22], [50, 10], [12, 22], [7, 56]],
+      7: [[50, 92], [88, 74], [93, 34], [70, 12], [30, 12], [7, 34], [12, 74]],
+      8: [[50, 92], [82, 78], [97, 46], [84, 14], [50, 8], [16, 14], [3, 46], [18, 78]],
+      9: [[50, 92], [80, 83], [97, 52], [89, 22], [67, 8], [33, 8], [11, 22], [3, 52], [20, 83]],
     };
     if (layouts[n]) return layouts[n];
     // fallback: evenly distribute the bots around the ring, hero at bottom.
@@ -312,9 +312,15 @@
 
         const badges = document.createElement("div");
         badges.className = "badges";
-        if (seat.is_button) badges.innerHTML += `<span class="badge btn-d">D</span>`;
-        if (seat.is_sb) badges.innerHTML += `<span class="badge sb">SB</span>`;
-        if (seat.is_bb) badges.innerHTML += `<span class="badge bb">BB</span>`;
+        const pos = seat.position || "";
+        if (pos && seat.state !== "folded") {
+          const posClass = {
+            "BTN": "btn-d", "SB": "sb", "BB": "bb",
+            "CO": "co", "UTG": "utg", "HJ": "hj",
+            "UTG+1": "utg1", "HJ-1": "hj1", "UTG+2": "utg2",
+          }[pos] || "pos-other";
+          badges.innerHTML += `<span class="badge ${posClass}">${pos}</span>`;
+        }
 
         // Every seat: cards on top, name plate on the bottom.
         el.appendChild(hole); el.appendChild(plate); el.appendChild(badges);
@@ -328,8 +334,8 @@
           bet.className = "bet-chip";
           bet.innerHTML = `<span class="chip"></span>${seat.bet}`;
           // 28% of the way from the seat toward the center of the table.
-          const bx = x + (50 - x) * 0.3;
-          const by = y + (50 - y) * 0.3;
+          const bx = x + (50 - x) * 0.35;
+          const by = y + (50 - y) * 0.35;
           bet.style.left = bx + "%"; bet.style.top = by + "%";
           this.$seats.appendChild(bet);
         }
@@ -626,6 +632,21 @@
     async coachSend(text) {
       this.coachAppend("user", text, false);
       const bubbleEl = this.coachAppend("assistant", "…", true);
+
+      // Pre-create the conversation with the correct entry_point on first message.
+      if (!this._coachConversationId) {
+        try {
+          const conv = await fetch("/api/coach/conversations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ game_id: this._coachGameId || null, entry_point: "in_game" }),
+          });
+          if (conv.ok) {
+            const data = await conv.json();
+            this._coachConversationId = data.conversation_id;
+          }
+        } catch (_) {}
+      }
 
       const body = {
         message: text,

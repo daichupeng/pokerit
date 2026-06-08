@@ -12,6 +12,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from poker_trainer.api import auth, coach, games, profile
 from poker_trainer.auth import config as auth_config
 from poker_trainer.ws import router as ws_router
+from shared_services.logging_config import configure_logging
+
+configure_logging()
 
 STATIC_DIR = Path(__file__).parent / "static"
 

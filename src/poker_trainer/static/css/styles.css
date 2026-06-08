@@ -63,7 +63,7 @@ input[type=text], input[type=email], input[type=number] {
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0.05rem 1.0rem; background: #11151b; border-bottom: 1px solid #222a33;
+  padding: 0.05rem 1.0rem; padding-right: 0; background: #11151b; border-bottom: 1px solid #222a33;
   min-height: 60px;
 }
 .profile-chip { display: flex; align-items: center; gap: 0.6rem; }
@@ -107,9 +107,9 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   border: 16px solid var(--rail);
   box-shadow: inset 0 0 80px rgba(0,0,0,.45), 0 12px 40px rgba(0,0,0,.5);
 }
-.community { position: absolute; top: 55%; left: 50%; transform: translate(-50%, -50%);
+.community { position: absolute; top: 53%; left: 50%; transform: translate(-50%, -50%);
   display: flex; gap: 10px; }
-.pot { position: absolute; top: 40%; left: 50%; transform: translateX(-50%);
+.pot { position: absolute; top: 37%; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,.45); padding: 6px 16px; border-radius: 16px; font-weight: 700;
   color: var(--gold); font-size: 1.15rem; text-align: center; line-height: 1.3; }
 .pot .pot-line { white-space: nowrap; }
@@ -177,11 +177,19 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   50% { border-color: #b6ffc4; box-shadow: 0 0 0 4px #b6ffc4, 0 0 38px #8dff9f; }
 }
 
-.badge { display: inline-block; width: 28px; height: 28px; line-height: 28px; border-radius: 50%;
-  font-size: 0.8rem; font-weight: 800; color: #1b1b1b; box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+.badge { display: inline-block; min-width: 28px; height: 28px; line-height: 28px;
+  padding: 0 5px; border-radius: 14px; text-align: center;
+  font-size: 0.72rem; font-weight: 800; color: #1b1b1b; box-shadow: 0 1px 3px rgba(0,0,0,.5); }
 .badge.btn-d { background: #fff; }
-.badge.sb { background: #9ad; }
-.badge.bb { background: #fc9; }
+.badge.sb  { background: #9ad; }
+.badge.bb  { background: #fc9; }
+.badge.co  { background: #b8e0b8; }
+.badge.utg { background: #e0b8b8; }
+.badge.hj  { background: #c8c8e8; }
+.badge.utg1  { background: #e8c8b0; }
+.badge.hj1   { background: #b0d8e0; }
+.badge.utg2  { background: #e8d0b0; }
+.badge.pos-other { background: #ccc; }
 .seat .badges { display: flex; gap: 5px; justify-content: center; margin-top: 5px; }
 
 /* ---------- cards (CSS/SVG drawn) ---------- */
@@ -305,8 +313,14 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
 }
 .hand-detail .action-list li { color: var(--text); font-size: 0.9rem; }
 .hand-detail .hand-players li { font-size: 0.95rem; line-height: 1.6; }
-.hand-detail .pname { color: var(--muted); }
+.hand-detail .pname { color: #7eb8d4; }
 .hand-detail .pname.hero { color: var(--gold); font-weight: 700; }
+.pos-badge {
+  display: inline-block; font-size: 0.7rem; font-weight: 700;
+  color: var(--muted); background: #1e2830; border: 1px solid #2a3540;
+  border-radius: 4px; padding: 0 0.3rem; vertical-align: middle;
+  letter-spacing: .3px; margin-left: 0.1rem;
+}
 
 /* Per-street pot and stack context. */
 .street-pot { font-size: 0.8rem; margin: 0.2rem 0 0.3rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
@@ -321,6 +335,11 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   padding: 0.1rem 0.4rem; color: var(--muted);
 }
 .stack-chip.hero { border-color: var(--gold); color: var(--gold); }
+
+/* Inline bet/stack context after an action. */
+.action-context {
+  font-size: 0.75rem; color: var(--muted); margin-left: 0.4rem;
+}
 
 /* All-in tag inline in action lines. */
 .tag-allin {
@@ -375,7 +394,7 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
 
 /* ---------- global coach panel (fixed drawer, persists across pages) ---------- */
 .global-coach-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; width: 450px; z-index: 200;
+  position: fixed; top: 0; right: 0; bottom: 0; width: 40vw; z-index: 200;
   background: var(--panel); border-left: 1px solid #222a33;
   display: flex; flex-direction: column;
   transform: translateX(0); transition: transform .2s ease;

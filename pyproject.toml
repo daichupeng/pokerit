@@ -16,6 +16,16 @@ dependencies = [
     "alembic>=1.13",
     "python-dotenv>=1.0",
     "openai>=1.30",
+    "minimax>=0.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter>=1.0",
+    "jupyterlab>=4.0",
+    "ipykernel>=6.29",
+    "ipywidgets>=8.0",
+    "pytest>=7.0",
 ]
 
 [build-system]

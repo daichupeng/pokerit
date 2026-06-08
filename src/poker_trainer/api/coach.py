@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_functions.conversation_engine.engine import (
@@ -46,6 +47,8 @@ class ChatRequest(BaseModel):
 class NewConversationRequest(BaseModel):
     game_id: uuid.UUID | None = None
     pinned_context: str | None = None  # always-present context block (hand, game summary, etc.)
+    entry_point: str = "generic"
+    hand_id: uuid.UUID | None = None
 
 
 @router.post("/conversations")
@@ -59,8 +62,49 @@ def create_conversation(
         user_id=user.id,
         game_id=body.game_id,
         pinned_context=body.pinned_context,
+        entry_point=body.entry_point,
+        hand_id=body.hand_id,
     )
     return {"conversation_id": str(conv.id)}
+
+
+@router.get("/conversations/by-hand/{hand_id}")
+def get_conversation_by_hand(
+    hand_id: uuid.UUID,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return the most recent hand_history conversation for a specific hand, or 404."""
+    conv = (
+        db.execute(
+            select(Conversation)
+            .where(
+                Conversation.user_id == user.id,
+                Conversation.hand_id == hand_id,
+                Conversation.entry_point == "hand_history",
+            )
+            .order_by(Conversation.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No conversation found for this hand")
+    return {
+        "conversation_id": str(conv.id),
+        "game_id": str(conv.game_id) if conv.game_id else None,
+        "hand_id": str(conv.hand_id),
+        "messages": [
+            {
+                "role": m.role,
+                "content": m.content,
+                "seq": m.seq,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in conv.messages
+        ],
+    }
 
 
 @router.get("/conversations/{conversation_id}")

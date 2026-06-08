@@ -151,7 +151,7 @@
   async function showGameHands(gameId, autoRound) {
     if (!state.user) { location.hash = "#/login"; return; }
     screen("game-hands");
-    document.getElementById("hands-back").onclick = () => (location.hash = "#/history");
+    document.getElementById("hands-back").onclick = () => (location.hash = "#/");
     const list = document.getElementById("hands-list");
     let data;
     try { data = await api("/api/games/" + gameId + "/hands"); }
@@ -184,7 +184,7 @@
         api(`/api/games/${gameId}/hands/${h.round_count}/context`)
           .then((ctx) => {
             if (_globalCoach && ctx && ctx.context) {
-              _globalCoach.setHandContext(gameId, h.round_count, ctx.context);
+              _globalCoach.setHandContext(gameId, h.round_count, ctx.context, ctx.hand_id);
             }
           })
           .catch(() => {});
@@ -197,22 +197,36 @@
     const target = list.querySelector(`[data-round="${targetRound}"]`);
     if (target) target.click();
 
-    wireCoachBtns(gameId, true);
+    wireCoachBtns(gameId);
+  }
+
+  // Render a player name with optional position badge.
+  function pnameHTML(name, isHero, pos) {
+    const label = isHero ? "you" : name;
+    const posTag = pos ? ` <span class="pos-badge">${pos}</span>` : "";
+    return `<span class="pname${isHero ? " hero" : ""}">${label}</span>${posTag}`;
+  }
+
+  // Render a small context tag showing current-street bet and remaining stack.
+  function actionContextHTML(a) {
+    if (a.street_bet == null || a.stack_before == null) return "";
+    return ` <span class="action-context">Current Bet: ${a.street_bet.toLocaleString()} · Stack: ${a.stack_before.toLocaleString()}</span>`;
   }
 
   // Phrase one action as "name action amount" (hero shown as "you").
   function actionLine(a) {
-    const who = a.is_hero ? "you" : a.name;
+    const who = pnameHTML(a.name, a.is_hero, a.position);
+    const ctx = actionContextHTML(a);
     const amt = a.amount || 0;
     const allin = a.is_allin ? ` <span class="tag-allin">ALL IN</span>` : "";
     switch (a.action) {
-      case "fold": return `${who} folds`;
-      case "raise": return `${who} raises to ${amt.toLocaleString()}${allin}`;
-      case "call": return amt > 0 ? `${who} calls ${amt.toLocaleString()}${allin}` : `${who} checks`;
-      case "smallblind": return `${who} posts small blind ${amt.toLocaleString()}`;
-      case "bigblind": return `${who} posts big blind ${amt.toLocaleString()}`;
-      case "ante": return `${who} posts ante ${amt.toLocaleString()}`;
-      default: return `${who} ${a.action}${amt ? " " + amt.toLocaleString() : ""}`;
+      case "fold": return `${who} folds${ctx}`;
+      case "raise": return `${who} raises to ${amt.toLocaleString()}${allin}${ctx}`;
+      case "call": return amt > 0 ? `${who} calls ${amt.toLocaleString()}${allin}${ctx}` : `${who} checks${ctx}`;
+      case "smallblind": return `${who} posts small blind ${amt.toLocaleString()}${ctx}`;
+      case "bigblind": return `${who} posts big blind ${amt.toLocaleString()}${ctx}`;
+      case "ante": return `${who} posts ante ${amt.toLocaleString()}${ctx}`;
+      default: return `${who} ${a.action}${amt ? " " + amt.toLocaleString() : ""}${ctx}`;
     }
   }
 
@@ -267,9 +281,8 @@
 
     // Players' hole cards header.
     const playersHTML = d.players.map((p) => {
-      const who = p.is_hero ? "you" : p.name;
       const cards = p.hole_cards ? cardsHTML(p.hole_cards) : `<span class="muted">Unknown</span>`;
-      return `<li><span class="pname${p.is_hero ? " hero" : ""}">${who}</span>: ${cards}</li>`;
+      return `<li>${pnameHTML(p.name, p.is_hero, p.position)}: ${cards}</li>`;
     }).join("");
 
     let html = `<div class="hand-detail-header"><h3>Hand #${d.round_count}</h3></div>`;
@@ -282,11 +295,10 @@
     // Showdown: revealed cards + hand values.
     if (d.had_showdown && d.showdown_hands && d.showdown_hands.length) {
       const sdRows = d.showdown_hands.map(sh => {
-        const who = sh.is_hero ? "you" : sh.name;
         const winTag = sh.is_winner
           ? ` <span class="win">wins ${sh.amount_won.toLocaleString()}</span>` : "";
         return `<li>
-          <span class="pname${sh.is_hero ? " hero" : ""}">${who}</span>:
+          ${pnameHTML(sh.name, sh.is_hero, sh.position)}:
           ${cardsHTML(sh.hole_cards)}
           <span class="hand-label">${sh.hand_label}</span>${winTag}
         </li>`;
@@ -357,8 +369,8 @@
       chip.querySelector(".qx").onclick = () => chip.remove();
       container.appendChild(chip);
     }
-    [2, 2.5, 3, 4].forEach((v) => addChip(preflopRows, v, "× BB"));
-    [33, 50, 75, 100].forEach((v) => addChip(postflopRows, v, "% Pot"));
+    [2, 2.5, 3.5, 4.5].forEach((v) => addChip(preflopRows, v, "× BB"));
+    [33, 50, 65, 100].forEach((v) => addChip(postflopRows, v, "% Pot"));
     $("preflop-add").onclick = () => addChip(preflopRows, 3, "× BB");
     $("postflop-add").onclick = () => addChip(postflopRows, 50, "% Pot");
     const readChips = (c) => Array.from(c.querySelectorAll(".qv"))
@@ -465,17 +477,13 @@
     document.getElementById("global-coach-panel").classList.toggle("hidden");
   }
 
-  // Wire every topbar AI Coach button (called after each screen() render).
-  // Pass isHandScreen=true when on game-hands so hand context is preserved.
-  function wireCoachBtns(gameId, isHandScreen) {
+  // Wire the AI Coach button on the game-hands screen.
+  function wireCoachBtns(gameId) {
     if (_globalCoach) {
       _globalCoach.gameId = gameId || null;
     }
-    document.querySelectorAll(".topbar-coach-btn").forEach((btn) => {
-      // table.js owns toggle-panel; skip it here
-      if (btn.id === "toggle-panel") return;
-      btn.onclick = toggleGlobalCoach;
-    });
+    const btn = document.getElementById("history-toggle-coach");
+    if (btn) btn.onclick = toggleGlobalCoach;
   }
 
   // ---------- markdown helper ----------
@@ -522,20 +530,42 @@
       });
     }
 
-    // Load context for a new hand: creates a fresh conversation with the hand
-    // text pinned server-side, clears the UI, and shows a banner.
-    async setHandContext(gameId, roundCount, contextText) {
+    // Load context for a hand: resumes an existing hand_history conversation if
+    // one exists, otherwise creates a new one with the hand text pinned server-side.
+    async setHandContext(gameId, roundCount, contextText, handId) {
       this.gameId = gameId;
       this.conversationId = null;
       this.messagesEl.innerHTML = "";
       const banner = document.createElement("div");
       banner.className = "coach-hand-banner";
-      banner.textContent = `Hand #${roundCount} loaded — ask the coach anything about this hand.`;
       this.messagesEl.appendChild(banner);
+
+      // Try to resume an existing conversation for this hand.
+      if (handId) {
+        try {
+          const existing = await api(`/api/coach/conversations/by-hand/${handId}`);
+          if (existing && existing.conversation_id) {
+            this.conversationId = existing.conversation_id;
+            banner.textContent = `Hand #${roundCount} — continuing previous conversation.`;
+            // Replay stored messages into the UI.
+            (existing.messages || []).forEach((m) => this.append(m.role, m.content, false));
+            return;
+          }
+        } catch (_) {
+          // 404 = no prior conversation; fall through to create one.
+        }
+      }
+
+      banner.textContent = `Hand #${roundCount} loaded — ask the coach anything about this hand.`;
       try {
         const res = await api("/api/coach/conversations", {
           method: "POST",
-          body: JSON.stringify({ game_id: gameId, pinned_context: contextText }),
+          body: JSON.stringify({
+            game_id: gameId,
+            pinned_context: contextText,
+            entry_point: "hand_history",
+            hand_id: handId || null,
+          }),
         });
         this.conversationId = res.conversation_id;
       } catch (e) {

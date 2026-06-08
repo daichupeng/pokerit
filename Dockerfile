@@ -15,13 +15,13 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --frozen --no-install-project
 
 # Now copy the source and install the project itself.
 COPY src ./src
 COPY scripts ./scripts
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen
 
 # Default: serve the web app. (Override with a script command to run a CLI game.)
 ENV PYTHONPATH=/app/src

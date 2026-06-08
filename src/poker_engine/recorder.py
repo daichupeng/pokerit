@@ -27,6 +27,7 @@ from poker_engine.db.models import (
     HandPlayer,
     Street,
 )
+from shared_services.hand_formatter import pos_label as _pos_label
 
 # PyPokerEngine action-history "action" values (uppercase) → our lowercase tags.
 _ACTION_NAMES = {
@@ -48,6 +49,7 @@ class _ActionRecord:
     action: str
     amount: int
     seq: int
+    stack_after: int | None = None
 
 
 @dataclass
@@ -57,6 +59,8 @@ class _HandRecord:
     button_pos: int | None = None
     sb_pos: int | None = None
     bb_pos: int | None = None
+    # Ordered list of seat indices that were active (non-zero stack) this hand.
+    active_seats: list[int] = field(default_factory=list)
     starting_stacks: dict[str, int] = field(default_factory=dict)
     street_reached: Street = Street.PREFLOP
     board: list[str] = field(default_factory=list)
@@ -155,6 +159,7 @@ class PerspectiveRecorder:
         hand.button_pos = round_state.get("dealer_btn")
         hand.sb_pos = round_state.get("small_blind_pos")
         hand.bb_pos = round_state.get("big_blind_pos")
+        hand.active_seats = list(round_state.get("active_seats", []))
         hand.board = list(round_state.get("community_card", []))
         hand.street_reached = _street(round_state.get("street"))
         hand.pot = round_state.get("pot")
@@ -165,7 +170,7 @@ class PerspectiveRecorder:
 
         # Identify hero by matching its hole cards into the revealed map below.
         self._hero_uuid = self._infer_hero_uuid(round_state, hand)
-        if self._hero_uuid:
+        if self._hero_uuid and (revealed_uuids is None or self._hero_uuid in revealed_uuids):
             hand.revealed_cards[self._hero_uuid] = list(hand.hero_hole)
 
         # All players' hole cards: store all (including folded), but only mark as revealed
@@ -204,6 +209,7 @@ class PerspectiveRecorder:
                         action=action,
                         amount=int(entry.get("amount", 0) or 0),
                         seq=seq,
+                        stack_after=entry.get("stack_after"),
                     )
                 )
                 seq += 1
@@ -393,6 +399,9 @@ class PerspectiveRecorder:
             is_revealed = uuid_ in hand_rec.revealed_cards
             won = uuid_ in hand_rec.winners
             amount_won = (final - start) if (final is not None and start is not None) else 0
+            pos = ""
+            if hand_rec.button_pos is not None and hand_rec.active_seats:
+                pos = _pos_label(gp.seat_index, hand_rec.button_pos, hand_rec.active_seats)
             session.add(
                 HandPlayer(
                     hand=hand,
@@ -403,6 +412,7 @@ class PerspectiveRecorder:
                     amount_won=amount_won,
                     starting_stack=start,
                     final_stack=final,
+                    position=pos or None,
                 )
             )
 
@@ -418,6 +428,7 @@ class PerspectiveRecorder:
                     action=act.action,
                     amount=act.amount,
                     seq=act.seq,
+                    stack_after=act.stack_after,
                 )
             )
 

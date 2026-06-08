@@ -23,27 +23,37 @@ BOT_STYLES = [SeatKind.TAG, SeatKind.LAG, SeatKind.STATION, SeatKind.ROCK]
 # Bot names are "Adjective Noun" pairs drawn from these 30×30 = 900 combos,
 # sampled uniquely per game.
 _BOT_ADJECTIVES = [
-    "Beautiful", "Crazy", "Clever", "Attacking", "Lucky", "Silent", "Savage",
-    "Calm", "Bold", "Sneaky", "Ruthless", "Wild", "Cool", "Fierce", "Sly",
-    "Brave", "Mighty", "Slick", "Cunning", "Reckless", "Steady", "Grumpy",
-    "Happy", "Shadow", "Iron", "Golden", "Furious", "Mellow", "Daring", "Loose",
+    "vivid", "hollow", "brisk", "damp", "quiet", "zesty", "plump", "faint", "sharp", "grim", "lanky", 
+    "stark", "jaunty", "coarse", "numb", "witty", "bland", "rough", "keen", "meek", "droll", "salty", 
+    "puffy", "harsh", "dim", "odd", "lush", "tepid", "giddy", "tame", "chubby", "fit", "sly", "vast", 
+    "firm", "apt", "snug", "grand", "rank", "wary", "calm", "foul", "exotic", "dull", "wild", "prime", 
+    "slow", "bleak", "tart", "nice", "mild", "slim", "glad", "hoarse", "full", "kind", "grisly", "pale", 
+    "gruff", "vague", "light", "crisp", "warm", "quick", "dear", "rare", "loose", "fast", "sore", "cold",
+    "lucid", "plain", "short", "deep", "tough", "neat", "just", "hard", "busy", "rich", "long", "main", 
+    "base", "able", "sweet", "flat", "curt", "fres", "sure", "broad", "sick", "true", "thin", "dank", 
+    "high", "pure", "wise", "real", "arid", "open"
 ]
 _BOT_NOUNS = [
-    "King", "Fish", "Rock", "Ace", "Beat", "Hand", "Shark", "Bluff", "River",
-    "Flush", "Dealer", "Joker", "Chip", "Whale", "Nit", "Donk", "Cooler",
-    "Boat", "Tilt", "Maniac", "Grinder", "Gambler", "Caller", "Raiser", "Bandit",
-    "Snap", "Bullet", "Stack", "Outlaw", "Hustler",
+    "Kite", "Zebra", "Bolt", "Fjord", "Quartz", "Mace", "Dusk", "Vex", "Jolt", "Haze", "Pike", "Wisp", 
+    "Grit", "Tusk", "Brim", "Loom", "Cove", "Nook", "Rift", "Spire", "Yarn", "Flux", "Omen", "Knoll", 
+    "Bask", "Swale", "Drake", "Quill", "Jive", "Vane", "Helm", "Cleft", "Pith", "Zeal", "Gale", "Root", 
+    "Finch", "Kindle", "Mirth", "Scion", "Wren", "Plume", "Trove", "Basil", "Ibis", "Chord", "Drift", 
+    "Knot", "Glade", "Nerve", "Apex", "Brine", "Forge", "Husk", "Vista", "Quirk", "Yoke", "Crest", "Lens", 
+    "Pulse", "Shard", "Verve", "Bough", "Gorge", "Kin", "Mist", "Prism", "Silt", "Vale", "Warp", "Aura", 
+    "Blaze", "Crypt", "Fawn", "Grove", "Haven", "Ivy", "Junction", "Knack", "Lark", "Mote", "Niche", 
+    "Oasis", "Peak", "Quarry", "Reef", "Stark", "Thorn", "Urn", "Vault", "Wedge", "Xylem", "Yard", 
+    "Zenith", "Anchor", "Cliff", "Cairn", "Dune", "Echo", "Frost"
 ]
 
 
 def _random_bot_names(count: int, rng: random.Random) -> list[str]:
     """Sample `count` unique 'Adjective Noun' names (up to 900 combinations)."""
-    combos = [f"{a} {n}" for a in _BOT_ADJECTIVES for n in _BOT_NOUNS]
+    combos = [f"{a}{s}{n}" for a in _BOT_ADJECTIVES for n in _BOT_NOUNS for s in ("_", "-",".")]
     return rng.sample(combos, min(count, len(combos)))
 
 # Default quick-bet presets. Preflop sizing is in big blinds; postflop in % pot.
-DEFAULT_PREFLOP_QUICK = [2.0, 2.5, 3.0, 4.0]   # × BB
-DEFAULT_POSTFLOP_QUICK = [33.0, 50.0, 75.0, 100.0]  # % pot
+DEFAULT_PREFLOP_QUICK = [2.0, 2.5, 3.5, 4.5]   # × BB
+DEFAULT_POSTFLOP_QUICK = [33.0, 50.0, 60.0, 100.0]  # % pot
 
 
 class CreateGameRequest(BaseModel):
@@ -224,6 +234,7 @@ def list_hands(
                 hero_amount = hp.amount_won
                 break
         rows.append({
+            "hand_id": str(hand.id),
             "round_count": hand.round_count,
             "street_reached": hand.street_reached.value,
             "board": list(hand.board or []),
@@ -271,6 +282,12 @@ def hand_detail(
         gp = seat_by_gp.get(gp_id)
         return gp.display_name if gp else "?"
 
+    # Position is stored per hand_player row — read directly from DB.
+    pos_by_gp: dict = {hp.game_player_id: (hp.position or "") for hp in hand.players}
+
+    def pos_of(gp_id) -> str:
+        return pos_by_gp.get(gp_id, "")
+
     # Players' hands, in seat order. hole_cards is None unless known to the hero.
     players = []
     for hp in sorted(
@@ -285,6 +302,7 @@ def hand_detail(
             "hole_cards": list(hp.hole_cards) if hp.hole_cards else None,
             "is_winner": hp.is_winner,
             "amount_won": hp.amount_won,
+            "position": pos_of(hp.game_player_id),
         })
 
     # Per-player starting stack at hand start (keyed by game_player_id).
@@ -293,15 +311,8 @@ def hand_detail(
         if hp.starting_stack is not None:
             start_stack[hp.game_player_id] = hp.starting_stack
 
-    # Action amounts are the *cumulative total* a player has committed on that
-    # street (not the incremental size). Track last-seen total per player to
-    # compute the delta for stack accounting and detect all-ins.
-    #
-    # cumulative_committed[gp_id] = total chips this player has put in across
-    # all streets so far (updated at each street boundary and after each action).
-    cumulative_committed: dict = {gp_id: 0 for gp_id in start_stack}
-    streets_out: dict[str, dict] = {}
     actions_sorted = sorted(hand.actions, key=lambda a: a.seq)
+    streets_out: dict[str, dict] = {}
 
     # Group actions by street first, preserving order.
     raw_streets: dict[str, list] = {s: [] for s in _STREET_ORDER}
@@ -317,50 +328,77 @@ def hand_detail(
         "river": board[:5],
     }
 
+    # current_stacks[gp_id] = stack entering the current street.
+    # Initialized from hand-start stacks; updated at the end of each street
+    # using stack_after values recorded by the engine.
+    current_stacks: dict = dict(start_stack)
+
+    # Players who folded in a *previous* street (excluded from later displays).
+    folded_before_street: set = set()
+
+    # Pot accumulated from all previous streets (chips already in the middle).
+    pot_carried: int = 0
+
     for st in _STREET_ORDER:
         acts = raw_streets[st]
         st_board = board_by_street[st]
 
-        # Emit a street block whenever there are actions OR community cards
-        # (all-in runouts have cards dealt but no betting actions).
         if not acts and not st_board:
             continue
 
-        # Pot at start of this street = sum of all committed chips so far.
-        pot_start = sum(cumulative_committed.values())
+        # Stacks at the START of this street — snapshot before any action mutates them.
+        stacks_at_street_start = dict(current_stacks)
 
-        # Per-player stack at the start of this street.
-        stacks_at_street = {
-            gp_id: max(0, start_stack.get(gp_id, 0) - cumulative_committed.get(gp_id, 0))
-            for gp_id in start_stack
-        }
-
-        pot_info: dict = {"main": pot_start, "side": []}
-
-        # Per-street committed tally (resets each street) for delta calculation.
-        street_committed_prev: dict = {gp_id: 0 for gp_id in start_stack}
-
+        folds_this_street: set = set()
         action_rows = []
+        chips_added_this_street: int = 0
+        # Cumulative chips each player has committed this street (their "current bet").
+        # For preflop, pre-seed SB/BB with their posted blinds so action lines
+        # show the correct "current bet" and stack before their first voluntary action.
+        street_invested: dict = {}
+        if st == "preflop":
+            gp_by_seat = {gp.seat_index: gp.id for gp in game.players}
+            if hand.sb_pos is not None:
+                sb_gp_id = gp_by_seat.get(hand.sb_pos)
+                if sb_gp_id and sb_gp_id in current_stacks:
+                    sb_amt = game.small_blind
+                    street_invested[sb_gp_id] = sb_amt
+                    current_stacks[sb_gp_id] -= sb_amt
+                    chips_added_this_street += sb_amt
+            if hand.bb_pos is not None:
+                bb_gp_id = gp_by_seat.get(hand.bb_pos)
+                if bb_gp_id and bb_gp_id in current_stacks:
+                    bb_amt = game.big_blind
+                    street_invested[bb_gp_id] = bb_amt
+                    current_stacks[bb_gp_id] -= bb_amt
+                    chips_added_this_street += bb_amt
+
         for act in acts:
             gp_id = act.game_player_id
             amt = act.amount or 0
 
-            if act.action in ("raise", "call", "smallblind", "bigblind", "ante") and amt > 0:
-                # amt is the cumulative total this player has put in THIS STREET.
-                prev = street_committed_prev.get(gp_id, 0)
-                delta = max(0, amt - prev)
-                street_committed_prev[gp_id] = amt
-                stacks_at_street[gp_id] = max(0, stacks_at_street[gp_id] - delta)
-                cumulative_committed[gp_id] = cumulative_committed.get(gp_id, 0) + delta
+            # Snapshot state BEFORE this action for display purposes.
+            street_bet_before = street_invested.get(gp_id, 0)
+            stack_before = current_stacks.get(gp_id, 0)
 
-                # All-in: player's stack reaches zero after this action.
+            # stack_after is recorded by the engine right after PokerKit processes
+            # the action, so it is always the authoritative post-action stack.
+            if act.stack_after is not None:
+                chips_put_in = max(0, stack_before - act.stack_after)
+                chips_added_this_street += chips_put_in
+                current_stacks[gp_id] = act.stack_after
+                street_invested[gp_id] = street_bet_before + chips_put_in
                 is_allin = (
                     act.action in ("raise", "call")
-                    and delta > 0
-                    and stacks_at_street[gp_id] == 0
+                    and act.stack_after == 0
+                    and chips_put_in > 0
                 )
             else:
+                # Fallback for legacy rows without stack_after.
                 is_allin = False
+
+            if act.action == "fold":
+                folds_this_street.add(gp_id)
 
             action_rows.append({
                 "name": name_of(gp_id),
@@ -368,35 +406,49 @@ def hand_detail(
                 "action": act.action,
                 "amount": amt,
                 "is_allin": is_allin,
+                "position": pos_of(gp_id),
+                "street_bet": street_bet_before,
+                "stack_before": stack_before,
             })
 
-        # Player stacks at start of this street (skip busted/absent seats).
+        # Player stacks at the START of this street.
+        # Include players who were still active entering this street.
         player_stacks = [
-            {"name": name_of(gp_id), "stack": stk, "is_hero": gp_id == hero_gp_id}
-            for gp_id, stk in stacks_at_street.items()
-            if start_stack.get(gp_id, 0) > 0
+            {"name": name_of(gp_id), "stack": stk, "is_hero": gp_id == hero_gp_id, "position": pos_of(gp_id)}
+            for gp_id, stk in stacks_at_street_start.items()
+            if start_stack.get(gp_id, 0) > 0 and gp_id not in folded_before_street
         ]
+
+        # Folds from this street are excluded from all subsequent street displays.
+        folded_before_street |= folds_this_street
 
         streets_out[st] = {
             "actions": action_rows,
-            "pot": pot_info,
+            "pot": {"main": pot_carried, "side": []},
             "board": st_board,
             "player_stacks": player_stacks,
         }
+
+        pot_carried += chips_added_this_street
 
     # Final pot structure from stored hand.pot (has accurate side pots).
     final_pot = hand.pot or {"main": {"amount": hand.pot_total}, "side": []}
 
     winners = [
-        {"name": p["name"], "is_hero": p["is_hero"], "amount_won": p["amount_won"]}
+        {"name": p["name"], "is_hero": p["is_hero"], "amount_won": p["amount_won"], "position": p["position"]}
         for p in players if p["is_winner"] and p["amount_won"] > 0
     ]
+
+    # Players who folded at any point (used to exclude hero from showdown display).
+    folded_gp_ids = {a.game_player_id for a in hand.actions if a.action == "fold"}
 
     # Hand values at showdown for all revealed players.
     showdown_hands = []
     if hand.had_showdown:
         for hp in hand.players:
             if not hp.hole_cards or not hp.revealed:
+                continue
+            if hp.game_player_id == hero_gp_id and hp.game_player_id in folded_gp_ids:
                 continue
             gp = seat_by_gp.get(hp.game_player_id)
             name = gp.display_name if gp else "?"
@@ -413,6 +465,7 @@ def hand_detail(
                 "hand_label": label,
                 "is_winner": hp.is_winner,
                 "amount_won": hp.amount_won,
+                "position": pos_of(hp.game_player_id),
             })
 
     return {
@@ -427,6 +480,7 @@ def hand_detail(
         "streets": streets_out,
         "winners": winners,
         "showdown_hands": showdown_hands,
+        "button_pos": hand.button_pos,
     }
 
 
@@ -441,9 +495,14 @@ def hand_context_text(
     from shared_services.hand_formatter import format_hand
 
     game = _load_owned_game(db, game_id, user)
+    hand = db.execute(
+        select(Hand).where(Hand.game_id == game.id, Hand.round_count == round_count)
+    ).scalar_one_or_none()
+    if hand is None:
+        raise HTTPException(404, "Hand not found.")
     detail = hand_detail(game_id, round_count, user, db)
     text = format_hand(detail, game.small_blind, game.big_blind)
-    return {"context": text, "round_count": round_count}
+    return {"context": text, "round_count": round_count, "hand_id": str(hand.id)}
 
 
 @router.get("/games/{game_id}/state")

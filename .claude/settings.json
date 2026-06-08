@@ -23,7 +23,11 @@
       "Bash(node /tmp/test_coach_integration.js)",
       "Bash(chmod +x /tmp/verify_markdown.sh)",
       "Bash(/tmp/verify_markdown.sh)",
-      "Bash(git commit -m 'Defer game DB creation to first hand completion *)"
+      "Bash(git commit -m 'Defer game DB creation to first hand completion *)",
+      "Bash(docker exec *)",
+      "Bash(docker cp *)",
+      "Bash(python -c \"import minimax\")",
+      "Bash(PGPASSWORD=poker psql -h localhost -U poker -d poker -c ' *)"
     ]
   }
 }

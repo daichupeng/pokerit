@@ -20,6 +20,7 @@ from poker_engine.bots.styles import STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind
 from poker_engine.recorder import PerspectiveRecorder
 from poker_trainer.game import serialize
+from shared_services.hand_formatter import pos_label as _pos_label
 
 # Automations that fire without any explicit call:
 #   ANTE_POSTING           post antes at hand start
@@ -85,6 +86,7 @@ class GameSession:
         self._hand_num: int = 0
         # Dealer button rotates: hand 0 → BTN=n-1, hand 1 → BTN=0, etc.
         self._btn_offset: int = 0
+        self._active_seats: list[int] = list(range(n))
 
         self._state = None          # current PokerKit State
         self._hero_hole: list[str] = []
@@ -149,6 +151,7 @@ class GameSession:
         # Active seats only (busted players sit out).
         active_seats = [i for i in range(n) if self._stacks[i] > 0]
         n_active = len(active_seats)
+        self._active_seats = active_seats  # stored for position labelling
 
         # Rotate dealer button among active seats.
         btn_active_idx = (self._hand_num - 1) % n_active
@@ -311,11 +314,13 @@ class GameSession:
 
         if action == "fold":
             state.fold()
-            self._record_action(uuid_, street_name, "FOLD", 0)
+            stack_after = state.stacks[actor_pk]
+            self._record_action(uuid_, street_name, "FOLD", 0, stack_after)
         elif action in ("call", "check"):
             call_amount = state.checking_or_calling_amount
             state.check_or_call()
-            self._record_action(uuid_, street_name, "CALL", call_amount)
+            stack_after = state.stacks[actor_pk]
+            self._record_action(uuid_, street_name, "CALL", call_amount, stack_after)
         elif action in ("raise", "bet"):
             lo = state.min_completion_betting_or_raising_to_amount
             hi = state.max_completion_betting_or_raising_to_amount
@@ -323,19 +328,22 @@ class GameSession:
                 # Raise not legal; fall back to call/check
                 call_amount = state.checking_or_calling_amount
                 state.check_or_call()
-                self._record_action(uuid_, street_name, "CALL", call_amount)
+                stack_after = state.stacks[actor_pk]
+                self._record_action(uuid_, street_name, "CALL", call_amount, stack_after)
             else:
                 clamped = max(lo, min(int(amount), hi))
                 state.complete_bet_or_raise_to(clamped)
-                self._record_action(uuid_, street_name, "RAISE", clamped)
+                stack_after = state.stacks[actor_pk]
+                self._record_action(uuid_, street_name, "RAISE", clamped, stack_after)
         else:
             call_amount = state.checking_or_calling_amount
             state.check_or_call()
-            self._record_action(uuid_, street_name, "CALL", call_amount)
+            stack_after = state.stacks[actor_pk]
+            self._record_action(uuid_, street_name, "CALL", call_amount, stack_after)
 
-    def _record_action(self, uuid_: str, street: str, action: str, amount: int) -> None:
+    def _record_action(self, uuid_: str, street: str, action: str, amount: int, stack_after: int) -> None:
         self._action_histories.setdefault(street, []).append(
-            {"uuid": uuid_, "action": action, "amount": amount}
+            {"uuid": uuid_, "action": action, "amount": amount, "stack_after": stack_after}
         )
 
     def _finish_hand(self) -> list[dict]:
@@ -407,9 +415,11 @@ class GameSession:
             {"uuid": uuid_, "hole_card": hole}
             for uuid_, hole in self._all_hole_cards_at_deal.items()
         ]
+        pot_total = sum(p for p in payoffs if p > 0)
         round_state_dict = self._build_round_state_dict(
             community=community,
             final_stacks=self._stacks,
+            pot_total_override=pot_total,
         )
         self.recorder._record_round_result(winner_dicts, hand_info, round_state_dict, revealed_uuids=set(revealed.keys()))
 
@@ -486,6 +496,8 @@ class GameSession:
             else:
                 state_str = "folded"
             show_style = bool(meta.get("is_bot")) and not meta.get("hidden")
+            is_sitting_out = self._stacks[i] == 0
+            seat_pos = _pos_label(i, self._btn_pos, self._active_seats) if not is_sitting_out else ""
             seats.append({
                 "pos": i,
                 "uuid": uuid_,
@@ -499,6 +511,7 @@ class GameSession:
                 "is_button": i == self._btn_pos,
                 "is_sb": i == self._sb_pos,
                 "is_bb": i == self._bb_pos,
+                "position": seat_pos,
                 "hole_cards": hero_hole if is_hero else None,
             })
 
@@ -541,6 +554,7 @@ class GameSession:
         self,
         community: list[str] | None = None,
         final_stacks: list[int] | None = None,
+        pot_total_override: int | None = None,
     ) -> dict:
         """Build a round_state dict compatible with the recorder's expected format."""
         n = len(self.config.seats)
@@ -565,6 +579,8 @@ class GameSession:
                     for p in pot_raw["side"]
                 ],
             }
+        if pot_total_override is not None:
+            pot["main"]["amount"] = pot_total_override
 
         seats = [
             {
@@ -583,6 +599,7 @@ class GameSession:
             "dealer_btn": self._btn_pos,
             "small_blind_pos": self._sb_pos,
             "big_blind_pos": self._bb_pos,
+            "active_seats": list(self._active_seats),
             "next_player": (
                 self._pk_to_seat[self._state.actor_index]
                 if self._state and self._state.actor_index is not None else None

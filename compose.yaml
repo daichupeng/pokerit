@@ -27,6 +27,9 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
+      LOG_DIR: /app/logs
+      LOG_LEVEL: INFO
+      LOG_JSON: "1"
     # Run the web app with hot-reload for development.
     command: >
       uv run uvicorn poker_trainer.main:app
@@ -40,6 +43,7 @@ services:
       - ./migrations:/app/migrations
       - ./alembic.ini:/app/alembic.ini
       - /app/.venv
+      - ./logs:/app/logs
     ports:
       - "8000:8000"
 
@@ -53,6 +57,32 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  jupyter:
+    build: .
+    image: poker-trainer:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
+      LOG_DIR: /app/logs
+      LOG_LEVEL: INFO
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --app-dir src
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+      - ./notebooks:/app/notebooks
+      - /app/.venv
+      - ./logs:/app/logs
+    ports:
+      - "8888:8888"
+    profiles:
+      - jupyter
 
 volumes:
   pgdata:

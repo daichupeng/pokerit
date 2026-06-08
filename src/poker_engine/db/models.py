@@ -261,6 +261,7 @@ class HandPlayer(Base):
     amount_won: Mapped[int] = mapped_column(Integer, default=0)
     starting_stack: Mapped[int | None] = mapped_column(Integer, nullable=True)
     final_stack: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    position: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     hand: Mapped["Hand"] = relationship(back_populates="players")
     game_player: Mapped["GamePlayer"] = relationship(back_populates="hand_entries")
@@ -277,6 +278,12 @@ class Conversation(Base):
     )
     game_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("games.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # "hand_history" | "in_game" | "generic"
+    entry_point: Mapped[str] = mapped_column(String(32), nullable=False, default="generic")
+    # The specific hand this conversation is about (null for generic).
+    hand_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hands.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # Caller-supplied context pinned between the system prompt and the rolling
     # message window — never trimmed, always present for the life of the
@@ -330,6 +337,7 @@ class Action(Base):
     amount: Mapped[int] = mapped_column(Integer, default=0)
     seq: Mapped[int] = mapped_column(Integer)  # order within the hand
     pot_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stack_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     hand: Mapped["Hand"] = relationship(back_populates="actions")
     game_player: Mapped["GamePlayer"] = relationship(back_populates="actions")
