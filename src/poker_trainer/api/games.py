@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from poker_engine import pk_adapter
+from poker_engine import pk_adapter, stats
 from poker_engine.bots.styles import STYLE_REGISTRY
 from poker_engine.bots.llm_styles import LLM_STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
@@ -260,6 +260,19 @@ def list_hands(
         "started_at": game.started_at.isoformat() if game.started_at else None,
         "hands": rows,
     }
+
+
+@router.get("/games/{game_id}/stats")
+def game_stats(
+    game_id: str,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Hero's stats for this game — works whether the game is finished or not."""
+    game = _load_owned_game(db, game_id, user)
+    hero = _hero_seat(game)
+    counts = stats.compute_game_stats(db, game.id, hero.id) if hero else stats.RawStatCounts()
+    return stats.to_display(counts)
 
 
 @router.get("/games/{game_id}/hands/{round_count}")

@@ -8,6 +8,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from poker_engine import stats as stats_engine
 from poker_engine.db.base import SessionLocal
 from poker_trainer.game.manager import manager
 
@@ -23,18 +24,31 @@ def _ended_a_hand(events: list[dict]) -> bool:
     return any(e.get("type") == "round_finish" for e in events)
 
 
-def _save_soft(session) -> None:
+def _save_soft(session) -> dict | None:
     """Incrementally persist the game so far, swallowing/logging any error.
 
     Per design, a failed mid-game save must never interrupt play: the next
     completed hand's save re-writes everything still missing (the recorder
     dedups by round, so nothing is double-written).
+
+    Returns the hero's freshly recomputed per-game stats (display shape) on
+    success, so the caller can push a ``stats_update`` event, or ``None`` if
+    the save failed or there's no hero seat to compute stats for.
     """
     try:
         with SessionLocal() as db:
-            session.persist_incremental(db)
+            game = session.persist_incremental(db)
+            hero = next(
+                (gp for gp in game.players if not gp.is_bot and gp.user_id is not None),
+                None,
+            )
+            if hero is None:
+                return None
+            counts = stats_engine.compute_game_stats(db, game.id, hero.id)
+            return stats_engine.to_display(counts)
     except Exception:
         log.exception("incremental save failed for game %s", getattr(session, "game_id", "?"))
+        return None
 
 
 @router.websocket("/ws/games/{game_id}")
@@ -78,7 +92,9 @@ async def play(websocket: WebSocket, game_id: str) -> None:
                 })
                 hand_ended = False
             if hand_ended:
-                _save_soft(session)
+                hero_stats = _save_soft(session)
+                if hero_stats is not None:
+                    await websocket.send_json({"type": "stats_update", "stats": hero_stats})
             if session.finished:
                 await _finish(websocket, session, game_id)
                 return
@@ -98,7 +114,9 @@ async def play(websocket: WebSocket, game_id: str) -> None:
                 )
                 hand_ended = await _stream_gen(websocket, gen)
                 if hand_ended:
-                    _save_soft(session)
+                    hero_stats = _save_soft(session)
+                    if hero_stats is not None:
+                        await websocket.send_json({"type": "stats_update", "stats": hero_stats})
                 if session.finished:
                     await _finish(websocket, session, game_id)
                     break

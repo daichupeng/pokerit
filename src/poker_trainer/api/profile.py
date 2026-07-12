@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from poker_engine import stats
 from poker_engine.db.models import AccountStatus, User
 from poker_trainer.api.auth import serialize_user
 from poker_trainer.auth.deps import get_db, require_user
@@ -73,6 +74,16 @@ def update_profile(
     db.commit()
     db.refresh(user)
     return serialize_user(user)
+
+
+@router.get("/stats")
+def profile_stats(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Hero's stats rolled up across every game they've played."""
+    counts = stats.compute_player_stats(db, user.id)
+    return stats.to_display(counts)
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)

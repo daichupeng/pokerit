@@ -34,7 +34,16 @@
       "Bash(python -m py_compile src/poker_engine/bots/llm_styles.py)",
       "Bash(python -m py_compile src/poker_engine/bots/__init__.py)",
       "Bash(python3 -c \"import sys,json; [print\\(json.dumps\\(json.loads\\(l\\), indent=2\\)\\) for l in sys.stdin]\")",
-      "Bash(python3 -c \"import sys; lines=sys.stdin.read\\(\\).split\\('\\\\n'\\); [print\\(l\\) for l in lines[:30]]\")"
+      "Bash(python3 -c \"import sys; lines=sys.stdin.read\\(\\).split\\('\\\\n'\\); [print\\(l\\) for l in lines[:30]]\")",
+      "Bash(git commit -m ' *)",
+      "Bash(grep -n \"history\\\\|game_id\\\\|GET /api/games/\\\\${\" src/poker_trainer/static/js/app.js)",
+      "Bash(grep -n \"showHistoryDetail\\\\|history-detail\\\\|list_hands\\\\|/hands\\\\`\\\\|fetch\\(\\\\`/api/games\" src/poker_trainer/static/js/app.js)",
+      "Bash(python -c ' *)",
+      "Bash(pip list *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'src'\\); import poker_engine.stats; print\\('ok'\\)\")",
+      "Bash(pg_isready)",
+      "Bash(env)",
+      "Bash(break)"
     ]
   }
 }

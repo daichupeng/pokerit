@@ -153,6 +153,11 @@
         return;
       }
       if (msg.type === "event") return this.onEvent(msg.event);
+      if (msg.type === "stats_update") {
+        this.serverStats = msg.stats;
+        this.renderStats();
+        return;
+      }
       if (msg.type === "saved") {
         this.setMessage("Game over. Result saved" + (msg.db_game_id ? "." : " (not persisted)."));
         this.disableControls();
@@ -560,6 +565,10 @@
 
     renderStats() {
       const el = document.getElementById("tab-stats");
+      if (this.serverStats) {
+        el.innerHTML = heroStatsHTML(this.serverStats);
+        return;
+      }
       const rows = Object.values(this.stats)
         .map((s) => `<tr><td>${esc(s.name)}</td><td>${s.played}</td><td>${s.won}</td></tr>`)
         .join("");
@@ -719,6 +728,39 @@
   function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
   function trim(n) { return Number.isInteger(n) ? String(n) : String(+(+n).toFixed(2)); }
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // ---- shared hero-stats formatting (used by both the live table and game
+  // history — reads the {pct,n,d}/{ratio,n,d} shape returned by
+  // GET /api/games/{id}/stats, /api/profile/stats, and the stats_update WS event) ----
+  function pctLabel(stat) {
+    if (!stat) return "—";
+    return `${stat.pct}% (${stat.n}/${stat.d})`;
+  }
+
+  function heroStatsHTML(s, opts) {
+    opts = opts || {};
+    const title = opts.title ? `<h4 class="stats-title">${esc(opts.title)}</h4>` : "";
+    const rows = [
+      ["VPIP", pctLabel(s.vpip)],
+      ["PFR", pctLabel(s.pfr)],
+      ["3-Bet", pctLabel(s.three_bet)],
+      ["Fold to 3-Bet", pctLabel(s.fold_to_3bet)],
+      ["C-Bet Flop", pctLabel(s.cbet && s.cbet.flop)],
+      ["C-Bet Turn", pctLabel(s.cbet && s.cbet.turn)],
+      ["C-Bet River", pctLabel(s.cbet && s.cbet.river)],
+      ["Fold to C-Bet Flop", pctLabel(s.fold_to_cbet && s.fold_to_cbet.flop)],
+      ["Fold to C-Bet Turn", pctLabel(s.fold_to_cbet && s.fold_to_cbet.turn)],
+      ["Fold to C-Bet River", pctLabel(s.fold_to_cbet && s.fold_to_cbet.river)],
+      ["WTSD", pctLabel(s.wtsd)],
+      ["W$SD", pctLabel(s.wsd)],
+      ["Aggression Factor", s.aggression_factor ? `${s.aggression_factor.ratio} (${s.aggression_factor.n}/${s.aggression_factor.d})` : "—"],
+    ];
+    const body = rows.map(([label, val]) => `<tr><td>${esc(label)}</td><td>${val}</td></tr>`).join("");
+    return `<div class="hero-stats">${title}` +
+      `<p class="tiny muted">Hands dealt: ${s.hands_dealt}</p>` +
+      `<table class="stat-table"><tbody>${body}</tbody></table></div>`;
+  }
+  window.heroStatsHTML = heroStatsHTML;
 
   window.PokerTable = {
     mount(gameId, wsUrl) {

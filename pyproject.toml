@@ -34,3 +34,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/poker_trainer", "src/poker_engine", "src/ai_functions", "src/shared_services"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

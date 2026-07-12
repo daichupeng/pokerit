@@ -302,6 +302,12 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   flex: 1; overflow-y: auto; padding: 0;
 }
 
+/* Hero stats summary (live table Stats tab + game-history sidebar). */
+.hero-stats { font-size: 0.82rem; }
+.hero-stats .stats-title { margin: 0 0 0.2rem; font-size: 0.8rem; color: var(--gold); }
+.hands-stats { border-bottom: 1px solid #222a33; padding-bottom: 0.6rem; margin-bottom: 0.4rem; }
+.hands-stats-row { display: flex; flex-direction: column; gap: 0.6rem; }
+
 /* Hand detail: street blocks with headings and action lines. */
 .hand-detail { padding: 0.5rem 1.25rem 1.5rem; }
 .hand-detail-header { padding: 0.75rem 0 0.5rem; border-bottom: 1px solid #232a34; margin-bottom: 0.25rem; }

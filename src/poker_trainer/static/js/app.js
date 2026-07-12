@@ -148,11 +148,35 @@
 
   function titleCase(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
+  // Hero's stats for this game, plus a comparison line against the hero's
+  // rolling stats across every game they've played. Hero-only — no opponent
+  // stats — and every stat shown as a percentage plus its raw count, never
+  // hidden for sample size.
+  async function loadGameStats(gameId) {
+    const el = document.getElementById("hands-stats");
+    if (!el) return;
+    el.innerHTML = `<p class="muted tiny">Loading stats…</p>`;
+    let game, career;
+    try {
+      [game, career] = await Promise.all([
+        api(`/api/games/${gameId}/stats`),
+        api("/api/profile/stats"),
+      ]);
+    } catch (e) {
+      el.innerHTML = `<p class="error tiny">Could not load stats: ${e.message}</p>`;
+      return;
+    }
+    const gameHTML = window.heroStatsHTML ? window.heroStatsHTML(game, { title: "This game" }) : "";
+    const careerHTML = window.heroStatsHTML ? window.heroStatsHTML(career, { title: "All games" }) : "";
+    el.innerHTML = `<div class="hands-stats-row">${gameHTML}${careerHTML}</div>`;
+  }
+
   async function showGameHands(gameId, autoRound) {
     if (!state.user) { location.hash = "#/login"; return; }
     screen("game-hands");
     document.getElementById("hands-back").onclick = () => (location.hash = "#/");
     const list = document.getElementById("hands-list");
+    loadGameStats(gameId);
     let data;
     try { data = await api("/api/games/" + gameId + "/hands"); }
     catch (e) {
