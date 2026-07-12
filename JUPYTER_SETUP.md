@@ -58,7 +58,7 @@ Access Jupyter Lab at `http://localhost:8888`
 ```python
 # Import project modules
 from poker_engine.engine import PokerEngine
-from src.ai_functions.conversation_engine import ConversationEngine
+from src.ai_functions.coach_engine import ConversationEngine
 import pandas as pd
 
 # Connect to database

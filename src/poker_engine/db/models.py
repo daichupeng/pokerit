@@ -54,18 +54,18 @@ class BotStyle(str, enum.Enum):
 
 
 class AccountStatus(str, enum.Enum):
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    DELETED = "deleted"
+    ACTIVE = "ACTIVE"
+    SUSPENDED = "SUSPENDED"
+    DELETED = "DELETED"
 
 
 class UserRole(str, enum.Enum):
-    USER = "user"
-    ADMIN = "admin"
+    USER = "USER"
+    ADMIN = "ADMIN"
 
 
 class AuthProvider(str, enum.Enum):
-    GOOGLE = "google"
+    GOOGLE = "GOOGLE"
 
 
 def _uuid() -> uuid.UUID:

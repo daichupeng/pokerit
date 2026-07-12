@@ -18,6 +18,10 @@ class SeatKind(str, Enum):
     LAG = "lag"
     STATION = "station"
     ROCK = "rock"
+    # LLM-driven bots
+    AI_GTO = "AI GTO"
+    AI_FISH = "AI Fish"
+    AI_STATION = "AI Station"
 
     @property
     def is_bot(self) -> bool:

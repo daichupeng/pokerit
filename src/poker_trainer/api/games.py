@@ -10,6 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from poker_engine import pk_adapter
+from poker_engine.bots.styles import STYLE_REGISTRY
+from poker_engine.bots.llm_styles import LLM_STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
 from poker_engine.db.models import Game, GamePlayer, Hand, User
 from poker_trainer.auth.deps import get_db, require_user
@@ -18,7 +20,14 @@ from poker_trainer.game.session import GameSession
 
 router = APIRouter(prefix="/api", tags=["games"])
 
-BOT_STYLES = [SeatKind.TAG, SeatKind.LAG, SeatKind.STATION, SeatKind.ROCK]
+# Derived from both registries — single source of truth.
+BOT_STYLES = [SeatKind(v) for v in list(STYLE_REGISTRY) + list(LLM_STYLE_REGISTRY)]
+
+@router.get("/bot-styles")
+def list_bot_styles() -> list[dict]:
+    """Return all available bot styles for the game setup UI."""
+    return [{"value": kind.value, "label": kind.value} for kind in BOT_STYLES]
+
 
 # Bot names are "Adjective Noun" pairs drawn from these 30×30 = 900 combos,
 # sampled uniquely per game.

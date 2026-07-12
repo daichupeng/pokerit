@@ -14,6 +14,40 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+          cpus: '4'
+
+  # One-shot container: pulls qwen3:8b then exits.
+  ollama-pull:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "qwen3:4b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
 
   app:
     build: .
@@ -21,12 +55,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     # Secrets (Google OAuth client, session secret) come from .env (gitignored).
     # See .env.example. DATABASE_URL falls back here if not set in .env.
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
+      OLLAMA_BASE_URL: http://ollama:11434
       LOG_DIR: /app/logs
       LOG_LEVEL: INFO
       LOG_JSON: "1"
@@ -57,6 +94,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   jupyter:
     build: .
@@ -86,4 +127,5 @@ services:
 
 volumes:
   pgdata:
+  ollama_data:
 

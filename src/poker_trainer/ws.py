@@ -54,17 +54,30 @@ async def play(websocket: WebSocket, game_id: str) -> None:
         async with lock:
             first_connect = session._last_view is None and not session.finished
             if first_connect:
-                events = await asyncio.to_thread(session.start)
+                gen = session.start_gen()
+                # Consume the first batch in a thread: this is where the deck is
+                # shuffled, cards dealt, and _last_view populated.
+                first_batch = await asyncio.to_thread(lambda: next(gen, None))
+                await websocket.send_json({
+                    "type": "init",
+                    "config": session.table_config(),
+                    "view": session.current_view(),
+                    "pending_ask": session.pending_ask(),
+                })
+                if first_batch:
+                    for event in first_batch:
+                        await websocket.send_json({"type": "event", "event": event})
+                    await asyncio.sleep(0.8)  # let the dealt-cards view settle
+                hand_ended = await _stream_gen(websocket, gen)
             else:
-                events = []
-            await websocket.send_json({
-                "type": "init",
-                "config": session.table_config(),
-                "view": session.current_view(),
-                "pending_ask": session.pending_ask(),
-            })
-            await _stream(websocket, events)
-            if _ended_a_hand(events):
+                await websocket.send_json({
+                    "type": "init",
+                    "config": session.table_config(),
+                    "view": session.current_view(),
+                    "pending_ask": session.pending_ask(),
+                })
+                hand_ended = False
+            if hand_ended:
                 _save_soft(session)
             if session.finished:
                 await _finish(websocket, session, game_id)
@@ -80,12 +93,11 @@ async def play(websocket: WebSocket, game_id: str) -> None:
             async with lock:
                 if session.finished:
                     break
-                events = await asyncio.to_thread(
-                    functools.partial(session.apply_hero_action, action, amount)
+                gen = await asyncio.to_thread(
+                    functools.partial(session.apply_hero_action_gen, action, amount)
                 )
-                await _stream(websocket, events)
-                # Persist after any batch that finished one or more hands.
-                if _ended_a_hand(events):
+                hand_ended = await _stream_gen(websocket, gen)
+                if hand_ended:
                     _save_soft(session)
                 if session.finished:
                     await _finish(websocket, session, game_id)
@@ -113,6 +125,39 @@ async def _stream(websocket: WebSocket, events: list[dict]) -> None:
             await asyncio.sleep(0.8)
         elif event["type"] == "to_act":
             await asyncio.sleep(EVENT_DELAY_S)
+
+
+_SENTINEL = object()
+
+
+async def _stream_gen(websocket: WebSocket, gen) -> bool:
+    """Drive an _advance_gen() generator, streaming each batch with per-step pacing.
+
+    Each generator step runs in a thread (bot compute is CPU-bound). After a
+    [to_act] batch the WS layer sleeps before advancing, so the frontend has
+    time to highlight the seat before the bot's action arrives.
+    Returns True if a round_finish was sent (caller should save).
+    """
+    hand_ended = False
+    while True:
+        batch = await asyncio.to_thread(lambda: next(gen, _SENTINEL))
+        if batch is _SENTINEL:
+            break
+        for event in batch:
+            await websocket.send_json({"type": "event", "event": event})
+        types = {e["type"] for e in batch}
+        if "round_finish" in types:
+            hand_ended = True
+            finish_ev = next(e for e in batch if e["type"] == "round_finish")
+            n_pots = max(1, len([p for p in finish_ev.get("pot_winners", [])
+                                 if p.get("winners") and p.get("amount", 0) > 0]))
+            await asyncio.sleep(n_pots * 1.35 + 2.0)
+        elif "new_street" in types:
+            await asyncio.sleep(0.8)
+        elif "to_act" in types:
+            # Highlight the seat — sleep before the next step computes the bot action.
+            await asyncio.sleep(EVENT_DELAY_S)
+    return hand_ended
 
 
 async def _finish(websocket: WebSocket, session, game_id: str) -> None:

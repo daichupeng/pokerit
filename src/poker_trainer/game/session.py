@@ -17,10 +17,10 @@ from pokerkit import Automation, NoLimitTexasHoldem
 
 from poker_engine import pk_adapter
 from poker_engine.bots.styles import STYLE_REGISTRY
+from poker_engine.bots.llm_styles import LLM_STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind
 from poker_engine.recorder import PerspectiveRecorder
-from poker_trainer.game import serialize
-from shared_services.hand_formatter import pos_label as _pos_label
+from poker_trainer.game.serialize import build_round_state, build_view
 
 # Automations that fire without any explicit call:
 #   ANTE_POSTING           post antes at hand start
@@ -70,12 +70,16 @@ class GameSession:
 
         for index, spec in enumerate(config.seats):
             if spec.is_bot:
-                bot_cls = STYLE_REGISTRY[spec.kind.value]
-                bot_seed = None if seed is None else seed + index
-                bot = bot_cls(seed=bot_seed, **(spec.params or {}))
+                kind_val = spec.kind.value
+                if kind_val in LLM_STYLE_REGISTRY:
+                    bot = LLM_STYLE_REGISTRY[kind_val]()
+                else:
+                    bot_cls = STYLE_REGISTRY[kind_val]
+                    bot_seed = None if seed is None else seed + index
+                    bot = bot_cls(seed=bot_seed, **(spec.params or {}))
+                    self._bot_params_by_uuid[self.seat_uuids[index]] = bot.params.as_dict()
                 bot.set_n_players(n)
                 self._bot_players[index] = bot
-                self._bot_params_by_uuid[self.seat_uuids[index]] = bot.params.as_dict()
             self.seat_meta[self.seat_uuids[index]] = {
                 "is_bot": spec.is_bot,
                 "style": spec.kind.value if spec.is_bot else None,
@@ -130,6 +134,10 @@ class GameSession:
     def start(self) -> list[dict]:
         """Begin the first hand and advance to the first hero decision."""
         return self._start_hand()
+
+    def start_gen(self):
+        """Generator version of start(): deal cards, yield initial view, then advance step by step."""
+        return self._start_hand_gen()
 
     def apply_hero_action(self, action: str, amount: int) -> list[dict]:
         if self.finished or self._state is None:
@@ -226,47 +234,123 @@ class GameSession:
         out.extend(self._advance())
         return out
 
+    def _start_hand_gen(self):
+        """Generator that deals cards, yields the initial preflop view, then advances step by step."""
+        n = len(self.config.seats)
+        self._hand_num += 1
+        self._action_histories = {s: [] for s in ("preflop", "flop", "turn", "river")}
+        self._board = []
+        self._current_street_index = 0
+
+        active_seats = [i for i in range(n) if self._stacks[i] > 0]
+        n_active = len(active_seats)
+        self._active_seats = active_seats
+
+        btn_active_idx = (self._hand_num - 1) % n_active
+        btn_pos = active_seats[btn_active_idx]
+        sb_active_idx = (btn_active_idx + 1) % n_active
+        bb_active_idx = (btn_active_idx + 2) % n_active
+        sb_pos = active_seats[sb_active_idx]
+        self._sb_pos = sb_pos
+        self._bb_pos = active_seats[bb_active_idx]
+        self._btn_pos = btn_pos
+
+        rotated_active = [active_seats[(sb_active_idx + i) % n_active] for i in range(n_active)]
+        rotated_stacks = [self._stacks[seat_i] for seat_i in rotated_active]
+
+        self._pk_to_seat: list[int] = rotated_active
+        self._seat_to_pk: list[int] = [-1] * n
+        for pk_i, seat_i in enumerate(self._pk_to_seat):
+            self._seat_to_pk[seat_i] = pk_i
+
+        self._hero_pk_index = self._seat_to_pk[self.hero_index]
+        self._starting_stacks = list(self._stacks)
+
+        self._state = NoLimitTexasHoldem.create_state(
+            automations=_AUTOMATIONS,
+            ante_trimming_status=True,
+            raw_antes=self.config.ante,
+            raw_blinds_or_straddles=(self.config.small_blind, self.config.big_blind),
+            min_bet=self.config.big_blind,
+            raw_starting_stacks=rotated_stacks,
+            player_count=n_active,
+        )
+
+        deck = list(self._state.deck_cards)
+        self._rng.shuffle(deck)
+        card_idx = 0
+        for _ in range(2):
+            for _ in range(n_active):
+                self._state.deal_hole(deck[card_idx])
+                card_idx += 1
+        self._remaining_deck = deck[card_idx:]
+
+        self._hero_hole = pk_adapter.cards_to_strs(
+            self._state.hole_cards[self._hero_pk_index]
+        )
+        self._all_hole_cards_at_deal = {
+            self.seat_uuids[self._pk_to_seat[pk_i]]: pk_adapter.cards_to_strs(self._state.hole_cards[pk_i])
+            for pk_i in range(n_active)
+            if self._state.hole_cards[pk_i]
+        }
+
+        seats_for_recorder = [
+            {"name": self.config.seats[seat_i].name,
+             "uuid": self.seat_uuids[seat_i],
+             "stack": self._stacks[seat_i]}
+            for seat_i in range(n)
+        ]
+        self.recorder._record_round_start(self._hand_num, self._hero_hole, seats_for_recorder)
+
+        # Yield the dealt view immediately so the frontend shows cards before any bot thinks.
+        self._last_view = self._build_view()
+        yield [{"type": "new_street", "street": "preflop", "view": self._last_view}]
+
+        # Now advance step by step (bots highlight one at a time).
+        yield from self._advance_gen()
+
     def _advance(self) -> list[dict]:
         """Drive the game forward, emitting events until the hero must act or hand ends."""
-        out: list[dict] = []
+        return list(e for batch in self._advance_gen() for e in batch)
+
+    def _advance_gen(self):
+        """Generator version of _advance: yields event batches one at a time.
+
+        For bot turns, yields [to_act] first (so the WS layer can highlight the
+        seat and sleep), then resumes to compute the bot action and yields
+        subsequent events. This lets the frontend animate each bot sequentially.
+        """
         state = self._state
 
         while True:
             if state is None or not state.status:
-                # Hand is over.
-                out.extend(self._finish_hand())
-                return out
+                yield from ([e] for e in self._finish_hand())
+                return
 
             actor = state.actor_index
 
             if actor is None:
-                # No actor: burn + deal the next street, or hand is over.
                 if state.can_burn_card() or state.can_deal_board():
-                    out.extend(self._deal_next_street())
+                    yield from ([e] for e in self._deal_next_street())
                     continue
-                # Hand over (chips already pushed by automation).
-                out.extend(self._finish_hand())
-                return out
+                yield from ([e] for e in self._finish_hand())
+                return
 
-            # Translate PokerKit index to seat index
             seat_i = self._pk_to_seat[actor]
             uuid_ = self.seat_uuids[seat_i]
 
             if seat_i == self.hero_index:
-                # Hero's turn: emit ask and stop.
                 ask = self._build_ask()
                 self._pending_ask = ask
                 self._last_view = self._build_view()
-                out.append({"type": "to_act", "uuid": uuid_, "view": self._last_view})
-                out.append({"type": "ask", "valid_actions": ask["valid_actions"], "view": self._last_view})
-                return out
+                yield [{"type": "to_act", "uuid": uuid_, "view": self._last_view}]
+                yield [{"type": "ask", "valid_actions": ask["valid_actions"], "view": self._last_view}]
+                return
 
-            # Bot's turn
+            # Bot's turn: yield the highlight first, then compute and continue.
             self._last_view = self._build_view()
-            out.append({"type": "to_act", "uuid": uuid_, "view": self._last_view})
+            yield [{"type": "to_act", "uuid": uuid_, "view": self._last_view}]
             self._bot_act(seat_i, actor)
-
-        return out  # unreachable
 
     def _deal_next_street(self) -> list[dict]:
         """Deal the next community street and emit a new_street event."""
@@ -313,9 +397,15 @@ class GameSession:
         street_name = _STREET_NAMES.get(self._current_street_index, "preflop")
 
         if action == "fold":
-            state.fold()
-            stack_after = state.stacks[actor_pk]
-            self._record_action(uuid_, street_name, "FOLD", 0, stack_after)
+            if state.checking_or_calling_amount == 0:
+                # Folding when checking is free is illegal in PokerKit; check instead.
+                state.check_or_call()
+                stack_after = state.stacks[actor_pk]
+                self._record_action(uuid_, street_name, "CALL", 0, stack_after)
+            else:
+                state.fold()
+                stack_after = state.stacks[actor_pk]
+                self._record_action(uuid_, street_name, "FOLD", 0, stack_after)
         elif action in ("call", "check"):
             call_amount = state.checking_or_calling_amount
             state.check_or_call()
@@ -456,79 +546,26 @@ class GameSession:
     # -- view / serialization ------------------------------------------------
 
     def _build_view(self, hero_hole_override: list[str] | None = None, community_override: list[str] | None = None) -> dict:
-        state = self._state
-        n = len(self.config.seats)
-        hero_hole = hero_hole_override if hero_hole_override is not None else self._hero_hole
-        community = community_override if community_override is not None else self._board
-
-        if state is not None:
-            n_active = len(self._pk_to_seat)
-            stacks = [state.stacks[self._seat_to_pk[i]] if self._seat_to_pk[i] >= 0 else self._stacks[i] for i in range(n)]
-            bets = [state.bets[self._seat_to_pk[i]] if self._seat_to_pk[i] >= 0 else 0 for i in range(n)]
-            statuses = [state.statuses[self._seat_to_pk[i]] if self._seat_to_pk[i] >= 0 else False for i in range(n)]
-            pot = pk_adapter.pot_dict(state)
-            pot_with_uuids = {
-                "main": pot["main"],
-                "side": [
-                    {"amount": p["amount"], "eligibles": [self.seat_uuids[self._pk_to_seat[pk_i]] for pk_i in p["eligibles"]]}
-                    for p in pot["side"]
-                ]
-            }
-        else:
-            stacks = list(self._stacks)
-            bets = [0] * n
-            statuses = [True] * n
-            pot_with_uuids = {"main": {"amount": 0}, "side": []}
-
-        seats = []
-        for i, spec in enumerate(self.config.seats):
-            uuid_ = self.seat_uuids[i]
-            meta = self.seat_meta[uuid_]
-            is_hero = i == self.hero_index
-            pk_i = self._seat_to_pk[i] if hasattr(self, '_seat_to_pk') else -1
-            is_busted = self._stacks[i] == 0 and (state is None or pk_i < 0)
-            if is_busted:
-                state_str = "folded"
-            elif statuses[i]:
-                state_str = "participating"
-                if state is not None and pk_i >= 0 and state.stacks[pk_i] == 0:
-                    state_str = "allin"
-            else:
-                state_str = "folded"
-            show_style = bool(meta.get("is_bot")) and not meta.get("hidden")
-            is_sitting_out = self._stacks[i] == 0
-            seat_pos = _pos_label(i, self._btn_pos, self._active_seats) if not is_sitting_out else ""
-            seats.append({
-                "pos": i,
-                "uuid": uuid_,
-                "name": spec.name,
-                "stack": stacks[i],
-                "state": state_str,
-                "is_hero": is_hero,
-                "is_bot": bool(meta.get("is_bot")),
-                "style": meta.get("style") if show_style else None,
-                "bet": bets[i],
-                "is_button": i == self._btn_pos,
-                "is_sb": i == self._sb_pos,
-                "is_bb": i == self._bb_pos,
-                "position": seat_pos,
-                "hole_cards": hero_hole if is_hero else None,
-            })
-
-        actor_seat = None
-        if state is not None and state.actor_index is not None:
-            actor_seat = self._pk_to_seat[state.actor_index]
-
-        return {
-            "street": _STREET_NAMES.get(self._current_street_index, "preflop"),
-            "community_card": list(community),
-            "pot": pot_with_uuids,
-            "dealer_btn": self._btn_pos,
-            "next_player": actor_seat,
-            "round_count": self._hand_num,
-            "small_blind_amount": self.config.small_blind,
-            "seats": seats,
-        }
+        return build_view(
+            config=self.config,
+            state=self._state,
+            seat_uuids=self.seat_uuids,
+            seat_meta=self.seat_meta,
+            hero_index=self.hero_index,
+            pk_to_seat=self._pk_to_seat,
+            seat_to_pk=self._seat_to_pk,
+            stacks=self._stacks,
+            btn_pos=self._btn_pos,
+            sb_pos=self._sb_pos,
+            bb_pos=self._bb_pos,
+            active_seats=self._active_seats,
+            current_street_index=self._current_street_index,
+            hand_num=self._hand_num,
+            hero_hole=self._hero_hole,
+            board=self._board,
+            hero_hole_override=hero_hole_override,
+            community_override=community_override,
+        )
 
     def _build_valid_actions(self, pk_index: int) -> list[dict]:
         state = self._state
@@ -556,61 +593,35 @@ class GameSession:
         final_stacks: list[int] | None = None,
         pot_total_override: int | None = None,
     ) -> dict:
-        """Build a round_state dict compatible with the recorder's expected format."""
-        n = len(self.config.seats)
-        community = community or self._board
-        stacks = final_stacks or (
-            [self._state.stacks[self._seat_to_pk[i]] if self._seat_to_pk[i] >= 0 else self._stacks[i] for i in range(n)]
-            if self._state else list(self._stacks)
+        rs = build_round_state(
+            config=self.config,
+            state=self._state,
+            seat_uuids=self.seat_uuids,
+            pk_to_seat=self._pk_to_seat,
+            seat_to_pk=self._seat_to_pk,
+            stacks=self._stacks,
+            btn_pos=self._btn_pos,
+            sb_pos=self._sb_pos,
+            bb_pos=self._bb_pos,
+            active_seats=self._active_seats,
+            current_street_index=self._current_street_index,
+            board=self._board,
+            action_histories=self._action_histories,
+            hand_num=self._hand_num,
+            community=community,
+            final_stacks=final_stacks,
+            pot_total_override=pot_total_override,
         )
-        statuses = (
-            [self._state.statuses[self._seat_to_pk[i]] if self._seat_to_pk[i] >= 0 else False for i in range(n)]
-            if self._state else [True] * n
-        )
-
-        pot = {"main": {"amount": 0}, "side": []}
-        if self._state:
-            pot_raw = pk_adapter.pot_dict(self._state)
-            pot = {
-                "main": pot_raw["main"],
-                "side": [
-                    {"amount": p["amount"],
-                     "eligibles": [self.seat_uuids[self._pk_to_seat[pk_i]] for pk_i in p["eligibles"]]}
-                    for p in pot_raw["side"]
-                ],
-            }
-        if pot_total_override is not None:
-            pot["main"]["amount"] = pot_total_override
-
-        seats = [
-            {
-                "uuid": self.seat_uuids[i],
-                "name": self.config.seats[i].name,
-                "stack": stacks[i],
-                "state": "participating" if statuses[i] else "folded",
-            }
-            for i in range(n)
-        ]
-
-        return {
-            "street": _STREET_NAMES.get(self._current_street_index, "preflop"),
-            "community_card": list(community),
-            "pot": pot,
-            "dealer_btn": self._btn_pos,
-            "small_blind_pos": self._sb_pos,
-            "big_blind_pos": self._bb_pos,
-            "active_seats": list(self._active_seats),
-            "next_player": (
-                self._pk_to_seat[self._state.actor_index]
-                if self._state and self._state.actor_index is not None else None
-            ),
-            "round_count": self._hand_num,
-            "small_blind_amount": self.config.small_blind,
-            "seats": seats,
-            "action_histories": self._action_histories,
-        }
+        rs["hole_cards_by_uuid"] = dict(self._all_hole_cards_at_deal)
+        return rs
 
     # -- public state accessors ----------------------------------------------
+
+    def current_round_state(self) -> dict | None:
+        """Return the current round_state dict, or None if no hand is in progress."""
+        if self._state is None:
+            return None
+        return self._build_round_state_dict()
 
     def current_view(self) -> dict:
         if self._last_view is None:
@@ -648,6 +659,15 @@ class GameSession:
         action, amount = self._validate_action(action, amount)
         self._apply_action(action, amount, actor_pk=self._hero_pk_index)
         return self._advance()
+
+    def apply_hero_action_gen(self, action: str, amount: int):
+        """Apply the hero's action and return a generator of per-step event batches."""
+        if self.finished or self._state is None:
+            return iter([])
+        self._pending_ask = None
+        action, amount = self._validate_action(action, amount)
+        self._apply_action(action, amount, actor_pk=self._hero_pk_index)
+        return self._advance_gen()
 
     # -- persistence ---------------------------------------------------------
 

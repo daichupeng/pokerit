@@ -42,6 +42,13 @@ _ACTION_NAMES = {
 _VPIP_ACTIONS = {"call", "raise"}
 
 
+def _safe_bot_style(spec) -> BotStyle | None:
+    try:
+        return BotStyle(spec.kind.value)
+    except ValueError:
+        return None
+
+
 @dataclass
 class _ActionRecord:
     engine_uuid: str
@@ -290,7 +297,7 @@ class PerspectiveRecorder:
                 engine_uuid=seat["uuid"],
                 user_id=hero_user.id if (hero_user and not is_bot) else None,
                 is_bot=is_bot,
-                bot_style=BotStyle(spec.kind.value) if (spec and is_bot) else None,
+                bot_style=_safe_bot_style(spec) if (spec and is_bot) else None,
                 bot_params=bot_params_by_uuid.get(seat["uuid"]) if is_bot else None,
                 starting_stack=config.buy_in,
                 final_stack=self._final_stack(seat["uuid"]),

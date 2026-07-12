@@ -129,6 +129,11 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   padding: 8px 12px; display: flex; flex-direction: column; gap: 3px;
 }
 .seat.acting .plate { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold), 0 0 18px var(--gold); }
+.seat.acting:not(.hero-seat) .plate { animation: botThink 1.4s ease-in-out infinite; }
+@keyframes botThink {
+  0%, 100% { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold), 0 0 10px var(--gold); }
+  50%       { border-color: #ffe99a;    box-shadow: 0 0 0 3px #ffe99a,    0 0 28px #ffe99a; }
+}
 .seat.folded { opacity: .42; }
 .seat .name { font-weight: 700; font-size: 1.05rem; line-height: 1.15; }
 .seat .stack { font-size: 1.1rem; font-weight: 600; color: var(--gold); }

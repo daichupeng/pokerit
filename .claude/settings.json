@@ -15,7 +15,7 @@
       "Bash(uv pip *)",
       "Bash(python -c \"import itsdangerous; print\\('OK'\\)\")",
       "Bash(python -c \"from shared_services.hand_formatter import format_hand; print\\('OK'\\)\")",
-      "Bash(python -c \"from ai_functions.conversation_engine.engine import chat, _build_messages; print\\('OK'\\)\")",
+      "Bash(python -c \"from ai_functions.coach_engine.engine import chat, _build_messages; print\\('OK'\\)\")",
       "Skill(run)",
       "Skill(run:*)",
       "Bash(python -m uvicorn poker_trainer.main:app --reload --port 8000)",
@@ -27,7 +27,14 @@
       "Bash(docker exec *)",
       "Bash(docker cp *)",
       "Bash(python -c \"import minimax\")",
-      "Bash(PGPASSWORD=poker psql -h localhost -U poker -d poker -c ' *)"
+      "Bash(PGPASSWORD=poker psql -h localhost -U poker -d poker -c ' *)",
+      "Bash(python -c \"from poker_engine.bots import LLMBot, LLM_STYLE_REGISTRY, GTOBot, ManiacBot; print\\('OK'\\); print\\(list\\(LLM_STYLE_REGISTRY.keys\\(\\)\\)\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'src'\\); from poker_engine.bots import LLMBot, LLM_STYLE_REGISTRY, GTOBot, ManiacBot; print\\('OK'\\); print\\(list\\(LLM_STYLE_REGISTRY.keys\\(\\)\\)\\)\")",
+      "Bash(python -m py_compile src/poker_engine/bots/llm_bot_base.py)",
+      "Bash(python -m py_compile src/poker_engine/bots/llm_styles.py)",
+      "Bash(python -m py_compile src/poker_engine/bots/__init__.py)",
+      "Bash(python3 -c \"import sys,json; [print\\(json.dumps\\(json.loads\\(l\\), indent=2\\)\\) for l in sys.stdin]\")",
+      "Bash(python3 -c \"import sys; lines=sys.stdin.read\\(\\).split\\('\\\\n'\\); [print\\(l\\) for l in lines[:30]]\")"
     ]
   }
 }

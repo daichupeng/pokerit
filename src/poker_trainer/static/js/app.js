@@ -338,7 +338,11 @@
     sb.addEventListener("input", () => { bb.value = (+sb.value || 0) * 2; }); // keep BB = 2*SB
 
     const random = $("cfg-random"), picker = $("styles-picker"), rows = $("styles-rows"), bots = $("cfg-bots");
-    const STYLES = ["tag", "lag", "station", "rock"];
+    let STYLES = [];
+    fetch("/api/bot-styles").then(r => r.json()).then(data => {
+      STYLES = data;
+      rebuildPicker();
+    });
     function rebuildPicker() {
       picker.classList.toggle("hidden", random.checked);
       if (random.checked) return;
@@ -348,7 +352,7 @@
         const row = document.createElement("div");
         row.className = "styles-row";
         row.innerHTML = `<span class="tiny muted">Bot ${i + 1}</span>` +
-          `<select data-bot="${i}">${STYLES.map((s) => `<option value="${s}">${s.toUpperCase()}</option>`).join("")}</select>`;
+          `<select data-bot="${i}">${STYLES.map((s) => `<option value="${s.value}">${s.label}</option>`).join("")}</select>`;
         rows.appendChild(row);
       }
     }
@@ -515,6 +519,9 @@
       this.messagesEl = messagesEl;
       this.gameId = gameId;
       this.conversationId = null;
+      this._formEl = formEl;
+      this._inputEl = inputEl;
+      this._submitBtn = formEl.querySelector("button[type=submit]");
       formEl.addEventListener("submit", (e) => {
         e.preventDefault();
         const text = (inputEl.value || "").trim();
@@ -587,9 +594,15 @@
       return el;
     }
 
+    _setWaiting(waiting) {
+      if (this._submitBtn) this._submitBtn.disabled = waiting;
+      if (this._inputEl) this._inputEl.disabled = waiting;
+    }
+
     async send(text) {
       this.append("user", text, false);
-      const bubbleEl = this.append("assistant", "…", true);
+      const bubbleEl = this.append("assistant", "Thinking…", true);
+      this._setWaiting(true);
       const body = {
         message: text,
         game_id: this.gameId || null,
@@ -622,10 +635,12 @@
             } else if (payload.type === "done") {
               this.conversationId = payload.conversation_id;
               bubbleEl.classList.remove("coach-streaming");
+              this._setWaiting(false);
             } else if (payload.type === "error") {
               bubbleEl.textContent = "Error: " + payload.message;
               bubbleEl.classList.remove("coach-streaming");
               bubbleEl.classList.add("coach-error");
+              this._setWaiting(false);
             }
           }
         }
@@ -633,6 +648,7 @@
         bubbleEl.textContent = "Error: " + err.message;
         bubbleEl.classList.remove("coach-streaming");
         bubbleEl.classList.add("coach-error");
+        this._setWaiting(false);
       }
     }
   }

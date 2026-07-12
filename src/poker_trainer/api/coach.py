@@ -27,13 +27,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ai_functions.conversation_engine.engine import (
+from ai_functions.coach_engine.engine import (
     chat,
     get_or_create_conversation,
 )
 from poker_engine.db.models import Conversation
 from poker_trainer.auth.deps import get_db, require_user
 from poker_engine.db.models import User
+from poker_trainer.game.manager import manager
+from shared_services.table_formatter import format_table
 
 router = APIRouter(prefix="/api/coach", tags=["coach"])
 
@@ -147,9 +149,24 @@ async def coach_chat(
         conversation_id=body.conversation_id,
     )
 
+    live_context: str | None = None
+    if body.game_id is not None:
+        session = manager.get(str(body.game_id))
+        if session is not None:
+            round_state = session.current_round_state()
+            if round_state is not None:
+                table_text = format_table(round_state, session.hero_uuid)
+                live_context = f"Current table state:\n\n{table_text}"
+
     async def event_stream() -> AsyncIterator[str]:
         try:
-            generator = await chat(db, conv.id, body.message)
+            if conv.entry_point == "hand_history":
+                coach_scenario = "hand_review"
+            elif body.game_id:
+                coach_scenario = "in_game"
+            else:
+                coach_scenario = "generic"
+            generator = await chat(db, conv.id, body.message, live_context, conv_pair=3, coach_scenario=coach_scenario)
             async for chunk in generator:
                 payload = json.dumps({"type": "chunk", "text": chunk})
                 yield f"data: {payload}\n\n"
