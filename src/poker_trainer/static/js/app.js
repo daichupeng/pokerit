@@ -127,11 +127,45 @@
   }
 
   // ---------- history screens ----------
+  const _dismissedUnviewed = new Set(); // in-memory only — dismiss never marks viewed
+
+  async function loadUnviewedBanner() {
+    const el = document.getElementById("unviewed-banner");
+    if (!el) return;
+    let unviewed;
+    try { unviewed = await api("/api/evaluations/unviewed"); }
+    catch { return; }
+    const visible = unviewed.filter((e) => !_dismissedUnviewed.has(e.evaluation_id));
+    if (!visible.length) { el.innerHTML = ""; return; }
+
+    const rows = visible.map((e) =>
+      `<button class="unviewed-banner-row" data-game="${e.game_id}" data-eval="${e.evaluation_id}">
+        New coaching report ready — game from ${fmtDate(e.completed_at)}
+      </button>`
+    ).join("");
+    el.innerHTML = `<div class="unviewed-banner">
+      <div class="unviewed-banner-head">
+        <strong>${visible.length} new coaching report${visible.length === 1 ? "" : "s"}</strong>
+        <button class="unviewed-banner-dismiss">Dismiss</button>
+      </div>
+      <div class="unviewed-banner-list">${rows}</div>
+    </div>`;
+    el.querySelectorAll(".unviewed-banner-row").forEach((row) => {
+      row.onclick = () => (location.hash = `#/history/${row.dataset.game}/eval/${row.dataset.eval}`);
+    });
+    el.querySelector(".unviewed-banner-dismiss").onclick = () => {
+      visible.forEach((e) => _dismissedUnviewed.add(e.evaluation_id));
+      el.innerHTML = "";
+    };
+  }
+
   async function showHistory() {
     if (!state.user) { location.hash = "#/login"; return; }
     screen("history");
     document.getElementById("history-back").onclick = () => (location.hash = "#/");
+    document.getElementById("history-go-coaching").onclick = () => (location.hash = "#/profile/coaching");
     wireCoachBtns(null);
+    loadUnviewedBanner();
     const list = document.getElementById("history-list");
     try {
       const games = await api("/api/games");
@@ -223,28 +257,97 @@
     if (_evalPollTimer) { clearInterval(_evalPollTimer); _evalPollTimer = null; }
   }
 
-  function renderEvalReport(full) {
+  const PROFILE_STATUS_LABEL = { new: "New", returning: "Returning", regressing: "Regressing" };
+
+  function renderEvalReport(full, gameId, evalId) {
     const box = document.getElementById("eval-report");
     box.classList.remove("hidden");
+
+    const toolbar = document.getElementById("eval-toolbar");
+    const discardBtn = document.getElementById("eval-discard-btn");
+    toolbar.classList.remove("hidden");
+    const isDiscarded = !!full.discarded_at;
+    discardBtn.textContent = isDiscarded ? "Restore" : "Discard";
+    discardBtn.onclick = async () => {
+      discardBtn.disabled = true;
+      try {
+        const action = isDiscarded ? "restore" : "discard";
+        if (!isDiscarded && !confirm("Discard this evaluation? It will stop counting toward your coaching profile.")) {
+          discardBtn.disabled = false;
+          return;
+        }
+        await api(`/api/games/${gameId}/evaluations/${evalId}/${action}`, { method: "POST" });
+        // The rebuild can take a few seconds (it regenerates the playstyle
+        // summary via an LLM call) — the user may have navigated away from
+        // this report by the time it resolves, in which case these elements
+        // no longer exist and there's nothing to update.
+        if (!document.body.contains(discardBtn)) return;
+        full.discarded_at = isDiscarded ? null : new Date().toISOString();
+        renderEvalReport(full, gameId, evalId);
+      } catch (e) {
+        if (document.body.contains(discardBtn)) alert("Could not update evaluation: " + e.message);
+      } finally {
+        if (document.body.contains(discardBtn)) discardBtn.disabled = false;
+      }
+    };
+
+    const disputedTags = new Set(full.disputed_tags || []);
     const sections = (full.report && full.report.sections) || [];
-    let html = `<div class="eval-summary">${(full.report && full.report.summary) || ""}</div>`;
+    let html = "";
+    if (isDiscarded) {
+      html += `<div class="eval-discarded-banner"><span>This evaluation is discarded and excluded from your coaching profile.</span></div>`;
+    }
+    html += `<div class="eval-summary">${(full.report && full.report.summary) || ""}</div>`;
     sections.forEach((s) => {
       const citations = (s.citations || []).map((c) => {
         const round = typeof c === "object" ? c.round_count : c;
         return `<button class="eval-citation-chip" data-round="${round}">Hand #${round}</button>`;
       }).join("");
+      const profileBadge = s.profile_status
+        ? `<span class="eval-profile-status ${s.profile_status}">${PROFILE_STATUS_LABEL[s.profile_status] || s.profile_status}</span>`
+        : "";
+      const isDisputed = disputedTags.has(s.tag);
       html += `<div class="eval-section-card">
         <div class="eval-section-head">
           <span class="eval-tag">${titleCase((s.tag || "").replace(/_/g, " "))}</span>
           <span class="eval-severity sev-${s.severity}">severity ${s.severity}</span>
+          ${profileBadge}
         </div>
         <p>${s.narrative || ""}</p>
         <div class="eval-citations">${citations}</div>
+        <div class="eval-section-foot">
+          <button class="eval-dispute-btn${isDisputed ? " disputed" : ""}" data-tag="${s.tag}">
+            ${isDisputed ? "Disputed ✓" : "Dispute this finding"}
+          </button>
+        </div>
       </div>`;
     });
     box.innerHTML = html;
     box.querySelectorAll(".eval-citation-chip").forEach((chip) => {
       chip.onclick = () => (location.hash = `#/history/${full.game_id_for_link}/${chip.dataset.round}`);
+    });
+    box.querySelectorAll(".eval-dispute-btn").forEach((btn) => {
+      btn.onclick = async () => {
+        const tag = btn.dataset.tag;
+        const nowDisputed = !disputedTags.has(tag);
+        if (nowDisputed && !confirm("Dispute this finding? It will be excluded from your coaching profile.")) return;
+        btn.disabled = true;
+        try {
+          const res = await api(`/api/games/${gameId}/evaluations/${evalId}/dispute`, {
+            method: "POST",
+            body: JSON.stringify({ tags: [tag], disputed: nowDisputed }),
+          });
+          // Same staleness guard as discard/restore above — the rebuild
+          // triggers an LLM call and can outlive this report view.
+          if (!document.body.contains(btn)) return;
+          full.disputed_tags = res.disputed_tags;
+          renderEvalReport(full, gameId, evalId);
+        } catch (e) {
+          if (document.body.contains(btn)) alert("Could not update dispute: " + e.message);
+        } finally {
+          if (document.body.contains(btn)) btn.disabled = false;
+        }
+      };
     });
   }
 
@@ -298,7 +401,9 @@
         return;
       }
       full.game_id_for_link = gameId;
-      renderEvalReport(full);
+      renderEvalReport(full, gameId, evalId);
+      // Mark viewed on first render — a no-op if it's already viewed.
+      api(`/api/games/${gameId}/evaluations/${evalId}/viewed`, { method: "POST" }).catch(() => {});
     }
 
     await poll();
@@ -578,6 +683,7 @@
     screen("profile");
     const $ = (id) => document.getElementById(id);
     $("profile-back").onclick = () => (location.hash = "#/");
+    $("pf-go-coaching").onclick = () => (location.hash = "#/profile/coaching");
     wireCoachBtns(null);
 
     let p;
@@ -619,6 +725,78 @@
       if (!confirm("Delete your account? Your games are kept but you'll be logged out.")) return;
       await api("/api/profile", { method: "DELETE" });
       state.user = null; location.hash = "#/login";
+    };
+  }
+
+  // ---------- coaching profile (Phase 5+6) ----------
+  function leakCardHTML(leak) {
+    const regressedBadge = leak.regressed ? `<span class="coaching-regressed-pill">Regressing</span>` : "";
+    const lastSeenDate = leak.last_seen ? fmtDate(leak.last_seen.date) : "—";
+    return `<div class="coaching-leak-card">
+      <div class="coaching-leak-head">
+        <span class="eval-tag">${titleCase((leak.tag || "").replace(/_/g, " "))}</span>
+        <span class="coaching-status-pill ${leak.status}">${titleCase(leak.status || "")}</span>
+        ${regressedBadge}
+      </div>
+      <div class="coaching-leak-meta muted">
+        Seen ${leak.occurrences} time${leak.occurrences === 1 ? "" : "s"} · last: ${lastSeenDate}
+      </div>
+    </div>`;
+  }
+
+  function trendRowHTML(name, trend) {
+    const dirGlyph = trend.direction === "up" ? "▲" : trend.direction === "down" ? "▼" : "―";
+    const series = trend.series || [];
+    const latest = series.length ? series[series.length - 1] : null;
+    const latestText = latest ? `${latest.value}${typeof latest.value === "number" && latest.value <= 100 && name !== "aggression_factor" ? "%" : ""}` : "—";
+    return `<div class="coaching-trend-row">
+      <span>${titleCase(name.replace(/_/g, " "))}</span>
+      <span><span class="coaching-trend-dir ${trend.direction}">${dirGlyph}</span> ${latestText}</span>
+    </div>`;
+  }
+
+  async function showProfileCoaching() {
+    if (!state.user) { location.hash = "#/login"; return; }
+    screen("coaching-profile");
+    const $ = (id) => document.getElementById(id);
+    $("coaching-back").onclick = () => (location.hash = "#/history");
+
+    let profile;
+    try { profile = await api("/api/profile/coaching"); }
+    catch (e) {
+      $("coaching-count").textContent = "Could not load coaching profile: " + e.message;
+      return;
+    }
+
+    $("coaching-count").textContent = `${profile.evaluations_folded} evaluation${profile.evaluations_folded === 1 ? "" : "s"} folded in`;
+    $("coaching-summary").innerHTML = profile.playstyle_summary
+      ? `<div class="coaching-summary">${profile.playstyle_summary}</div>`
+      : `<p class="muted tiny">No playstyle summary yet — evaluate a few games to build your profile.</p>`;
+
+    const trends = profile.trends || {};
+    const trendNames = Object.keys(trends);
+    $("coaching-trends").innerHTML = trendNames.length
+      ? trendNames.map((name) => trendRowHTML(name, trends[name])).join("")
+      : `<p class="muted tiny">No trend data yet.</p>`;
+
+    const active = [...(profile.leaks_by_status.flagged || []), ...(profile.leaks_by_status.confirmed || [])];
+    $("coaching-active-leaks").innerHTML = active.length
+      ? active.map(leakCardHTML).join("")
+      : `<p class="muted tiny">No active leaks right now.</p>`;
+
+    const resolved = profile.leaks_by_status.resolved || [];
+    $("coaching-resolved-leaks").innerHTML = resolved.length
+      ? resolved.map(leakCardHTML).join("")
+      : `<p class="muted tiny">Nothing resolved yet.</p>`;
+
+    $("coaching-reset-btn").onclick = async () => {
+      if (!confirm("Reset your coaching profile? Active leaks and trends will be cleared — future evaluations start fresh. Past game reports are unaffected.")) return;
+      try {
+        await api("/api/profile/reset", { method: "POST" });
+        showProfileCoaching();
+      } catch (e) {
+        alert("Could not reset profile: " + e.message);
+      }
     };
   }
 
@@ -821,6 +999,7 @@
     if (hash.startsWith("#/table/")) return showTable(hash.slice("#/table/".length));
     if (hash === "#/create") return showCreate();
     if (hash === "#/profile") return showProfile();
+    if (hash === "#/profile/coaching") return showProfileCoaching();
     if (hash === "#/history") return showHistory();
     if (hash.startsWith("#/history/")) {
       const parts = hash.slice("#/history/".length).split("/");

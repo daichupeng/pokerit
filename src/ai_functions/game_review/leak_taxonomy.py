@@ -225,3 +225,29 @@ def severity_for_judgment_count(n: int) -> int:
     if n <= 3:
         return 2
     return 3
+
+
+def stat_tag_opportunity(tag: str, display: dict) -> int | None:
+    """The denominator (opportunity count) for a stat-derived ``tag``, or
+    ``None`` if the stat isn't present in ``display`` at all.
+
+    Used by the profile fold (``ai_functions.memory.fold``) to decide whether
+    a game gave the hero an opportunity to show a tag that's currently
+    ABSENT from that game's leak_tags — detection only reports tags that
+    clear their severity band, so absence alone doesn't distinguish "no
+    opportunity" from "played fine." Mirrors the exact floor checks
+    ``severity_for_stat_tag`` uses, just without the severity computation.
+    """
+    if tag == GAP_TAG:
+        vpip = display.get("vpip")
+        return vpip["d"] if vpip else None
+    if tag == POSITIONAL_TAG:
+        ep = _combined_position_vpip(display, EP_POSITIONS)
+        lp = _combined_position_vpip(display, LP_POSITIONS)
+        if ep is None or lp is None:
+            return None
+        return min(ep[1], lp[1])
+    if tag in STAT_THRESHOLDS:
+        node = _get_path(display, STAT_THRESHOLDS[tag].path)
+        return node.get("d") if node else None
+    raise ValueError(f"Unknown stat tag: {tag}")

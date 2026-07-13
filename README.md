@@ -38,21 +38,31 @@ bots** in `ai_functions/`.
 - `players/console.py` — `ConsolePlayer`, a human seat driven from stdin.
 - `db/` — SQLAlchemy models: `users`, `oauth_identities`, `games`,
   `game_players`, `hands`, `hand_players`, `actions`, plus `conversations` and
-  `messages` for the AI coach. Bots are transient (rows in `game_players` only);
+  `messages` for the AI coach, and `game_evaluations` + `coaching_profiles` for
+  the game-review pipeline. Bots are transient (rows in `game_players` only);
   only humans get a `users` account.
 - `recorder.py` — `PerspectiveRecorder`: records each game **from the hero's
   view**. Opponent hole cards are stored only when revealed at showdown; folded
   or unknown hands are stored as `NULL`. Side pots are stored verbatim.
 - `engine.py` — `GameEngine`: builds the table, runs the hand loop, records it.
+- `stats.py` — deterministic, hero-only poker stats: VPIP, PFR, 3-bet frequency,
+  C-bet frequency, fold-to-aggression, and more. Pure functions over recorded
+  `Hand`/`HandPlayer`/`Action` rows; no judgment calls, safe for live or finished
+  games. Entry points: `compute_game_stats(db, game_id, game_player_id)` and
+  `compute_player_stats(db, user_id)` roll up counts across games and normalize
+  to percentages via `to_display()`.
 
 ## AI coach (`ai_functions/`)
 
-An LLM coaching layer that reviews hands and advises during live play.
+An LLM coaching layer that reviews hands and advises during live play, plus an
+async multi-stage pipeline for game-level leak detection and synthesis.
 
-- `coach_engine/engine.py` — the single entry point for a coaching turn. It
-  builds the prompt (system prefix + optional pinned context + a live table
-  snapshot + a trimmed rolling window of recent turns), streams the reply from
-  the LLM, and persists both the user and assistant messages with token counts.
+### In-game coaching (`coach_engine/`)
+
+- `engine.py` — the single entry point for a coaching turn. It builds the
+  prompt (system prefix + optional pinned context + a live table snapshot + a
+  trimmed rolling window of recent turns), streams the reply from the LLM, and
+  persists both the user and assistant messages with token counts.
   Three coaching personas are selected per turn:
   - **hand_review** — blunt, range-based post-hand analysis of a saved hand.
   - **in_game** — next-best-action advice against the current table state.
@@ -60,6 +70,48 @@ An LLM coaching layer that reviews hands and advises during live play.
 - Conversations are keyed by `entry_point` (`hand_history` / `in_game` /
   `generic`) and may pin an un-trimmable context block plus a per-turn live
   context. The short-term memory window and a token budget bound the prompt size.
+
+### Game-level coaching (`game_review/`)
+
+A fully asynchronous pipeline that reads finished games, triages hands into
+leak categories, and synthesizes structured feedback. Powered by tools (agents
+with schema-validated outputs) and a per-street analyzer.
+
+- `pipeline.py` — the orchestration harness. Stages execute serially or
+  in parallel; agents are spawned with strict input/output schemas.
+  1. **Triage** — categorize hands by leak type (positional, aggression, etc.).
+  2. **Stat leaks** — filter to hands that diverge from peer benchmarks.
+  3. **Street agents** — per-street analysis (preflop position, flop texture, etc.).
+  4. **Merge** — consolidate findings across streets.
+  5. **Synthesis** — LLM writer composes a guided improvement plan.
+- `leak_taxonomy.py` — 20+ leak types with scoring and confidence.
+  Hands are routed to appropriate review agents.
+- `street_agent.py` — street-specific decision analysis with hand strength
+  estimation, equity breakdowns, and action frequencies.
+- `synthesis.py` — generates a narrative improvement plan from triaged findings.
+- `session_dynamics.py` — table conditions, villain shapes, and stack dynamics.
+- `triage.py` — initial hand categorization and urgency scoring.
+- `hand_context.py` — context builders (hand strength, stack-to-pot ratios).
+- `config.py` — feature flags and LLM/schema configuration.
+
+### Tools layer (`tools/`)
+
+Schema-validated tool executors and loop runners that power the game-review pipeline.
+
+- `executors.py` — `ToolExecutor` spawns an LLM agent with a strict JSON schema,
+  retries on parse failures, and returns the validated output. Logs every call.
+- `schemas.py` — Pydantic models for tool inputs/outputs (hand triage, leak
+  scoring, street analysis, narrative synthesis).
+- `loop.py` — retry loop for tools with `retry_count` and exponential backoff.
+
+### Long-term coaching profile (`memory/`)
+
+Persistent tracking of leak states, correction loops (discard/restore/dispute),
+and stat trends across all evaluated games.
+
+- `persistence.py` — build/load/persist the coaching profile row. Fold
+  completed evaluations into a profile that tracks leak status (flagged /
+  confirmed / resolved), playstyle summary, and when it was reset.
 
 ## Shared services (`shared_services/`)
 
@@ -82,37 +134,49 @@ cards revealed at showdown.
 
 - `main.py` — FastAPI app: REST setup, WebSocket play, serves the SPA at `/`.
 - `api/auth.py` — Google OAuth login/callback/logout (see below);
-  `api/games.py` — create game, list games, get state; `api/profile.py` — user
-  profile CRUD; `api/coach.py` — the AI coach: create/fetch conversations and a
-  streaming (SSE) chat endpoint that injects the live table state as context.
+  `api/games.py` — create game, list games, get state;
+  `api/profile.py` — user profile CRUD, player stats rollup, coaching profile read/reset;
+  `api/coach.py` — the AI coach: create/fetch conversations and a
+  streaming (SSE) chat endpoint that injects the live table state as context;
+  `api/game_evaluation.py` — game-level coaching review pipeline (enqueue, poll, read).
 - `game/session.py` — `GameSession` wraps the PokerKit state machine and the bot
   loop (LLM bots run in a worker thread so their async LLM calls don't block the
   event loop); `game/manager.py` — in-memory live games.
 - `game/serialize.py` — builds the hero-perspective round-state payloads.
 - `ws.py` — the play loop (streams events, receives the hero's action).
+- `worker.py` — async job worker for background game evaluations via [arq](https://arq-docs.helpmanual.io/).
+- `jobs.py` — Redis pool and job-queue configuration.
 - `static/` — SPA: `index.html`, `css/styles.css`, `js/app.js` (router + login/
   main/create screens), `js/table.js` (table render, bet controls, stats/hands
   panel). Cards and felt are drawn in CSS — no downloaded assets, works offline.
 
-User journey: **Login** (skippable) → **Main** (create game / review stub) →
+User journey: **Login** (skippable) → **Main** (create game / review evaluated games) →
 **Create game** (bots, blinds, buy-in; randomize + hide bot styles) → **Table**
 (standard play, slider + input bet controls clamped to the rules) with a
-collapsible **Stats / Hands** panel.
+collapsible **Stats / Hands** panel → **Game review** (async pipeline triages
+hands by leak type, synthesizes feedback, and coaches by street).
 
 ### Run the web app
 
 ```bash
 cp .env.example .env                  # then fill in Google OAuth + LLM creds (see below)
-docker compose up -d --build          # starts Postgres, Ollama, and the web app
+docker compose up -d --build          # starts Postgres, Redis, Ollama, app, and worker
 docker compose exec app uv run alembic upgrade head   # create/upgrade schema
 # open http://localhost:8000
 ```
 
-`docker compose` also brings up a local **Ollama** service (with a one-shot
-`ollama-pull` container that fetches `qwen3:4b`) so the LLM bots and coach can
-run against a local model without an external API. Set `OPENAI_API_KEY` (and
-optionally `MINIMAX_API_KEY`) in `.env` to use the hosted backends instead — the
-client in `shared_services/llm.py` routes by model name.
+`docker compose` brings up:
+
+- **Postgres 16** for game records, coaching conversations, and user profiles.
+- **Redis** as the job queue broker for background game evaluations (arq).
+- **Ollama** with a one-shot fetch of `qwen3:4b` so the LLM bots and coach can
+  run against a local model without an external API.
+- **FastAPI app** on port 8000 serving the web UI and REST API.
+- **arq worker** in a separate container (`worker`) that processes game-evaluation
+  jobs from the queue.
+
+Set `OPENAI_API_KEY` (and optionally `MINIMAX_API_KEY`) in `.env` to use hosted
+backends instead — the client in `shared_services/llm.py` routes by model name.
 
 ## LLM configuration
 
@@ -146,6 +210,19 @@ create or play a game; the game record links to your account by email.
 
 The `users` table now holds a full profile (username, avatar, bio, locale,
 status/role, timestamps); linked external identities live in `oauth_identities`.
+
+### User profile endpoints
+
+- `GET /api/profile` — retrieve the current user's profile (display name, username,
+  bio, avatar, country, timezone, language, preferences, account status).
+- `PATCH /api/profile` — update editable profile fields with validation.
+- `DELETE /api/profile` — soft-delete account (keeps game history, frees email/username).
+- `GET /api/profile/stats` — player's stats rolled up across all games (VPIP, PFR,
+  3-bet frequency, C-bet frequency, etc.).
+- `GET /api/profile/coaching` — long-term coaching profile: leak states grouped by
+  status (flagged / confirmed / resolved), stat trends, and playstyle summary.
+- `POST /api/profile/reset` — reset the coaching profile to fold all evaluations
+  before a certain timestamp, producing an empty profile until new evaluations complete.
 
 ### Google Cloud setup
 

@@ -1,11 +1,15 @@
 """REST endpoints for the game-evaluation background pipeline (coach agent
-Stage 5). Enqueues an arq job and exposes polling/read endpoints — no
+Stage 5) and the correction loop (discard/restore/dispute/viewed — Phase
+5+6's Stage 4). Enqueues an arq job and exposes polling/read endpoints — no
 WebSocket, per the feature's Fork L decision.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,7 +18,13 @@ from poker_trainer.api.games import _load_owned_game
 from poker_trainer.auth.deps import get_db, require_user
 from poker_trainer.jobs import get_redis_pool
 
+from ai_functions.memory.persistence import rebuild_and_persist
+
 router = APIRouter(prefix="/api", tags=["game-evaluation"])
+
+
+def _now():
+    return datetime.now(timezone.utc)
 
 
 def _load_owned_evaluation(db: Session, game_id: str, eval_id: str, user: User) -> GameEvaluation:
@@ -92,6 +102,9 @@ def get_evaluation(
         "leak_tags": evaluation.leak_tags,
         "report": evaluation.report,
         "model_versions": evaluation.model_versions,
+        "discarded_at": evaluation.discarded_at.isoformat() if evaluation.discarded_at else None,
+        "disputed_tags": evaluation.disputed_tags or [],
+        "viewed_at": evaluation.viewed_at.isoformat() if evaluation.viewed_at else None,
     }
 
 
@@ -110,3 +123,91 @@ def get_evaluation_status(
         "current_stage": evaluation.current_stage,
         "error": evaluation.error,
     }
+
+
+@router.post("/games/{game_id}/evaluations/{eval_id}/discard")
+async def discard_evaluation(
+    game_id: str,
+    eval_id: str,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    evaluation = _load_owned_evaluation(db, game_id, eval_id, user)
+    evaluation.discarded_at = _now()
+    db.commit()
+    await rebuild_and_persist(db, user.id)
+    return {"discarded_at": evaluation.discarded_at.isoformat()}
+
+
+@router.post("/games/{game_id}/evaluations/{eval_id}/restore")
+async def restore_evaluation(
+    game_id: str,
+    eval_id: str,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    evaluation = _load_owned_evaluation(db, game_id, eval_id, user)
+    evaluation.discarded_at = None
+    db.commit()
+    await rebuild_and_persist(db, user.id)
+    return {"discarded_at": None}
+
+
+class DisputeRequest(BaseModel):
+    tags: list[str]
+    disputed: bool
+
+
+@router.post("/games/{game_id}/evaluations/{eval_id}/dispute")
+async def dispute_evaluation_tags(
+    game_id: str,
+    eval_id: str,
+    body: DisputeRequest,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    evaluation = _load_owned_evaluation(db, game_id, eval_id, user)
+    disputed = set(evaluation.disputed_tags or [])
+    if body.disputed:
+        disputed |= set(body.tags)
+    else:
+        disputed -= set(body.tags)
+    evaluation.disputed_tags = sorted(disputed)
+    db.commit()
+    await rebuild_and_persist(db, user.id)
+    return {"disputed_tags": evaluation.disputed_tags}
+
+
+@router.post("/games/{game_id}/evaluations/{eval_id}/viewed")
+def mark_evaluation_viewed(
+    game_id: str,
+    eval_id: str,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    evaluation = _load_owned_evaluation(db, game_id, eval_id, user)
+    if evaluation.viewed_at is None:
+        evaluation.viewed_at = _now()
+        db.commit()
+    return {"viewed_at": evaluation.viewed_at.isoformat()}
+
+
+@router.get("/evaluations/unviewed")
+def list_unviewed_evaluations(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Completed, non-discarded evaluations this user hasn't opened yet —
+    for the history-page new-report popup."""
+    evaluations = db.execute(
+        select(GameEvaluation).where(
+            GameEvaluation.user_id == user.id,
+            GameEvaluation.status == EvaluationStatus.COMPLETED,
+            GameEvaluation.discarded_at.is_(None),
+            GameEvaluation.viewed_at.is_(None),
+        ).order_by(GameEvaluation.completed_at.desc())
+    ).scalars().all()
+    return [
+        {**_summary(e), "game_id": str(e.game_id)}
+        for e in evaluations
+    ]

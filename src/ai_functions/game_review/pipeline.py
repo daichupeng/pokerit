@@ -35,6 +35,8 @@ from ai_functions.game_review.session_dynamics import compute_session_dynamics
 from ai_functions.game_review.street_agent import BATCH_SIZE, STREETS, run_batch
 from ai_functions.game_review.synthesis import run_synthesis
 from ai_functions.game_review.triage import triage_hands
+from ai_functions.memory.persistence import build_profile_context, fold_and_persist
+from ai_functions.memory.profile_status import compute_profile_status
 
 _log = logging.getLogger("prompts")
 
@@ -253,6 +255,11 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
         game, _ = _load_game_with_hands(db, evaluation.game_id)
         user = db.get(User, evaluation.user_id)
 
+        # Read BEFORE this evaluation folds itself in, so its own result
+        # can't contaminate its own report (decision 4).
+        player_profile = build_profile_context(db, evaluation.user_id)
+        profile_status_by_tag = compute_profile_status(player_profile, leak_tags)
+
         result = await run_synthesis(
             stats_snapshot=evaluation.stats_snapshot["game_level"],
             session_dynamics=evaluation.stats_snapshot["session_dynamics"],
@@ -260,7 +267,11 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
             db=db,
             game_id=str(evaluation.game_id),
             user=user,
+            player_profile=player_profile,
+            profile_status_by_tag=profile_status_by_tag,
         )
+
+        already_folded = evaluation.folded_at is not None
 
         evaluation.report = result["report"]
         evaluation.model_versions = {"street_agent": config.MODEL, "synthesis": config.MODEL}
@@ -268,6 +279,18 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
         evaluation.progress_current = evaluation.progress_total
         evaluation.completed_at = _now()
         db.commit()
+
+        # Guard against double-folding: a crash-resume can re-run synthesis
+        # (and land here again) for an evaluation this exact row already
+        # folded once — incrementally folding it a second time would double-
+        # count its occurrences, unlike rebuild_profile which only ever sees
+        # one row per game. If a fold is ever actually missed (a crash
+        # between the two commits above), a rebuild recovers it, since
+        # rebuild_profile doesn't depend on folded_at at all.
+        if not already_folded:
+            await fold_and_persist(db, evaluation)
+            evaluation.folded_at = _now()
+            db.commit()
     except Exception as exc:  # noqa: BLE001
         evaluation = db.get(GameEvaluation, evaluation_id)
         evaluation.status = EvaluationStatus.FAILED

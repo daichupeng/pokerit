@@ -24,6 +24,7 @@ from poker_engine.db.models import (
     GamePlayer,
     Hand,
     HandPlayer,
+    PlayerProfile,
     Street,
     User,
 )
@@ -122,6 +123,10 @@ def _fake_synthesis_llm():
     return _fake
 
 
+async def _fake_playstyle_llm(**kwargs):
+    return StreamResult(text="Plays a solid, balanced game.", usage=TokenUsage(prompt_tokens=5, completion_tokens=2))
+
+
 def test_run_evaluation_completes_end_to_end(db_session, monkeypatch):
     db = db_session
     _patch_session_local(db_session, monkeypatch)
@@ -143,6 +148,10 @@ def test_run_evaluation_completes_end_to_end(db_session, monkeypatch):
         "ai_functions.tools.loop.chat_model_with_usage",
         _fake_synthesis_llm(),
     )
+    monkeypatch.setattr(
+        "ai_functions.memory.playstyle.chat_model_with_usage",
+        _fake_playstyle_llm,
+    )
 
     asyncio.run(run_evaluation({}, str(evaluation.id)))
 
@@ -152,6 +161,11 @@ def test_run_evaluation_completes_end_to_end(db_session, monkeypatch):
     assert evaluation.leak_tags is not None
     assert evaluation.report == {"summary": "Solid small sample.", "sections": []}
     assert evaluation.stats_snapshot["game_level"]["hands_dealt"] == 2
+    assert evaluation.folded_at is not None
+
+    profile = db.get(PlayerProfile, user.id)
+    assert profile is not None
+    assert profile.evaluations_folded == 1
 
     batches = db.execute(
         select(GameEvaluationBatch)
@@ -183,6 +197,10 @@ def test_run_evaluation_resume_skips_completed_batches(db_session, monkeypatch):
     monkeypatch.setattr(
         "ai_functions.tools.loop.chat_model_with_usage",
         _fake_synthesis_llm(),
+    )
+    monkeypatch.setattr(
+        "ai_functions.memory.playstyle.chat_model_with_usage",
+        _fake_playstyle_llm,
     )
 
     asyncio.run(run_evaluation({}, str(evaluation.id)))
@@ -246,3 +264,79 @@ def test_run_evaluation_marks_failed_when_batch_exhausts_retries(db_session, mon
     assert evaluation.status == EvaluationStatus.FAILED
     assert evaluation.error
     assert evaluation.report is None
+
+
+def test_second_evaluation_reports_returning_leak_and_profile_confirms(db_session, monkeypatch):
+    """Evaluating game B after folded game A, sharing a scripted leak tag,
+    must produce a report whose matching section carries
+    profile_status: "returning", and the profile afterward shows the tag
+    confirmed (Stage 3's "Done when").
+    """
+    db = db_session
+    _patch_session_local(db_session, monkeypatch)
+    user = _make_user(db)
+
+    def _fake_synthesis_reporting(tag):
+        async def _fake(**kwargs):
+            report = {"summary": "x", "sections": [{"tag": tag, "narrative": "narrative"}]}
+            return StreamResult(text=json.dumps(report), usage=TokenUsage(prompt_tokens=5, completion_tokens=2))
+        return _fake
+
+    monkeypatch.setattr(
+        "ai_functions.memory.playstyle.chat_model_with_usage",
+        _fake_playstyle_llm,
+    )
+
+    # Game A: street agent reports missed_fold once (judgment tag, first appearance -> flagged).
+    game_a, hero_gp_a, villain_gp_a = _make_game(db, user)
+    _make_hands(db, game_a, hero_gp_a, villain_gp_a)
+    eval_a = GameEvaluation(game_id=game_a.id, user_id=user.id, status=EvaluationStatus.PENDING)
+    db.add(eval_a)
+    db.commit()
+    db.refresh(eval_a)
+
+    async def _fake_street_reports_missed_fold(**kwargs):
+        findings = [{"tag": "missed_fold", "round_count": 0, "note": "clear missed fold"}]
+        return StreamResult(text=json.dumps(findings), usage=TokenUsage())
+
+    monkeypatch.setattr(
+        "ai_functions.game_review.street_agent.chat_model_with_usage",
+        _fake_street_reports_missed_fold,
+    )
+    monkeypatch.setattr(
+        "ai_functions.tools.loop.chat_model_with_usage",
+        _fake_synthesis_reporting("missed_fold"),
+    )
+    asyncio.run(run_evaluation({}, str(eval_a.id)))
+    db.refresh(eval_a)
+    assert eval_a.status == EvaluationStatus.COMPLETED
+    assert eval_a.report["sections"][0]["profile_status"] == "new"  # first-ever eval: no profile yet
+
+    profile = db.get(PlayerProfile, user.id)
+    assert profile.evaluations_folded == 1
+    missed_fold_record = next(r for r in profile.leaks if r["tag"] == "missed_fold")
+    assert missed_fold_record["status"] == "flagged"
+
+    # Game B: same tag reappears -> should be confirmed + reported as returning.
+    game_b, hero_gp_b, villain_gp_b = _make_game(db, user)
+    _make_hands(db, game_b, hero_gp_b, villain_gp_b)
+    eval_b = GameEvaluation(game_id=game_b.id, user_id=user.id, status=EvaluationStatus.PENDING)
+    db.add(eval_b)
+    db.commit()
+    db.refresh(eval_b)
+
+    monkeypatch.setattr(
+        "ai_functions.tools.loop.chat_model_with_usage",
+        _fake_synthesis_reporting("missed_fold"),
+    )
+    asyncio.run(run_evaluation({}, str(eval_b.id)))
+    db.refresh(eval_b)
+
+    assert eval_b.status == EvaluationStatus.COMPLETED
+    assert eval_b.report["sections"][0]["tag"] == "missed_fold"
+    assert eval_b.report["sections"][0]["profile_status"] == "returning"
+
+    db.refresh(profile)
+    assert profile.evaluations_folded == 2
+    missed_fold_record = next(r for r in profile.leaks if r["tag"] == "missed_fold")
+    assert missed_fold_record["status"] == "confirmed"

@@ -1,4 +1,8 @@
-"""Profile management: read, update, and delete the current account."""
+"""Profile management: read, update, and delete the current account. Also
+hosts the long-term coaching profile's read/reset endpoints (Phase 5+6's
+Stage 4) — a distinct concept from the account fields above, sharing this
+router's ``/api/profile`` prefix per the feature spec.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,8 @@ from poker_engine import stats
 from poker_engine.db.models import AccountStatus, User
 from poker_trainer.api.auth import serialize_user
 from poker_trainer.auth.deps import get_db, require_user
+
+from ai_functions.memory.persistence import build_profile_context, load_profile_row, rebuild_and_persist
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
@@ -101,3 +107,50 @@ def delete_account(
     db.commit()
     request.session.clear()
     return None
+
+
+@router.get("/coaching")
+def get_coaching_profile(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The long-term coaching profile: leak states grouped by status, stat
+    trends, playstyle summary, and how many evaluations are folded in.
+    """
+    row = load_profile_row(db, user.id)
+    if row is None:
+        return {
+            "evaluations_folded": 0,
+            "leaks_by_status": {"flagged": [], "confirmed": [], "resolved": []},
+            "trends": {},
+            "playstyle_summary": "",
+        }
+
+    context = build_profile_context(db, user.id) or {"trends": {}}
+    leaks_by_status = {"flagged": [], "confirmed": [], "resolved": []}
+    for leak in row.leaks:
+        bucket = leaks_by_status.get(leak.get("status"))
+        if bucket is not None:
+            bucket.append(leak)
+
+    return {
+        "evaluations_folded": row.evaluations_folded,
+        "leaks_by_status": leaks_by_status,
+        "trends": context.get("trends", {}),
+        "playstyle_summary": row.playstyle_summary or "",
+    }
+
+
+@router.post("/reset")
+async def reset_coaching_profile(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Reset the coaching profile: fold ignores everything completed before
+    now, yielding an empty profile until new evaluations complete. Never
+    touches any game_evaluations row — this IS the reset mechanism (decision
+    1), not a mutation of history.
+    """
+    reset_at = datetime.now(timezone.utc)
+    row = await rebuild_and_persist(db, user.id, reset_at=reset_at)
+    return {"reset_at": row.reset_at.isoformat(), "evaluations_folded": row.evaluations_folded}

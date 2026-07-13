@@ -52,6 +52,17 @@ coherent, line-level narrative rather than listing them separately.
 - Do not invent a severity, a kind, or a citation — those are already fixed \
 by the pinned leak tags; only add narrative text.
 - Cite round_counts for any hand you reference.
+- If pinned context includes a "player_profile", it summarizes the hero's \
+coaching history from prior games, and each leak_tag may carry a \
+"profile_status" of "new", "returning" (a recurring, previously flagged or \
+confirmed leak), or "regressing" (a leak the hero had previously resolved \
+that has now reappeared). Frame each section's narrative accordingly — \
+briefly note when a leak is returning or regressing rather than presenting \
+it as if seen for the first time. If the profile lists leaks that are \
+"resolved" and NOT present in this game's leak_tags, you may briefly \
+acknowledge that progress in the overall summary. Never treat the profile \
+itself as evidence for this game: every claim about THIS game must still \
+cite this game's own data or a tool result, never the profile.
 
 Respond with ONLY a JSON object (no prose, no code fences) of the exact shape:
 {"summary": "<2-4 sentence overall assessment>",
@@ -71,7 +82,9 @@ def _strip_fences(text: str) -> str:
     return stripped.strip()
 
 
-def _validate_sections(raw_sections: list, leak_tags_by_tag: dict[str, dict]) -> list[dict]:
+def _validate_sections(
+    raw_sections: list, leak_tags_by_tag: dict[str, dict], profile_status_by_tag: dict[str, str]
+) -> list[dict]:
     sections = []
     seen_tags = set()
     for item in raw_sections:
@@ -85,11 +98,16 @@ def _validate_sections(raw_sections: list, leak_tags_by_tag: dict[str, dict]) ->
             _prompt_log.warning("game_review.synthesis.unknown_tag", extra={"tag": tag})
             continue
         seen_tags.add(tag)
-        sections.append({**leak, "narrative": item.get("narrative", "")})
+        sections.append({
+            **leak,
+            "narrative": item.get("narrative", ""),
+            # Set from code, never trusted from the model (decision 5).
+            "profile_status": profile_status_by_tag.get(tag),
+        })
     return sections
 
 
-def _parse_report(raw_text: str, leak_tags: list[dict]) -> dict:
+def _parse_report(raw_text: str, leak_tags: list[dict], profile_status_by_tag: dict[str, str]) -> dict:
     leak_tags_by_tag = {lt["tag"]: lt for lt in leak_tags}
     try:
         parsed = json.loads(_strip_fences(raw_text))
@@ -100,7 +118,7 @@ def _parse_report(raw_text: str, leak_tags: list[dict]) -> dict:
     if not isinstance(parsed, dict):
         return {"summary": "", "sections": []}
 
-    sections = _validate_sections(parsed.get("sections") or [], leak_tags_by_tag)
+    sections = _validate_sections(parsed.get("sections") or [], leak_tags_by_tag, profile_status_by_tag)
     sections.sort(key=lambda s: -s["severity"])
 
     return {"summary": parsed.get("summary", ""), "sections": sections}
@@ -114,13 +132,32 @@ async def run_synthesis(
     game_id: str,
     user: User,
     model: str = config.MODEL,
+    player_profile: dict | None = None,
+    profile_status_by_tag: dict[str, str] | None = None,
 ) -> dict:
-    """Run the synthesis agent and return the parsed report plus tool-call/usage history."""
-    pinned_context = json.dumps({
+    """Run the synthesis agent and return the parsed report plus tool-call/usage history.
+
+    ``player_profile`` (leak states + trends + summary, read BEFORE this
+    evaluation folds itself in) and ``profile_status_by_tag`` (this game's
+    leak tags mapped to "new"/"returning"/"regressing", computed by
+    ``ai_functions.memory.profile_status``) are both omitted cleanly when the
+    user has no profile yet — a first-ever evaluation runs with no
+    "player_profile" key in pinned context at all.
+    """
+    profile_status_by_tag = profile_status_by_tag or {}
+    leak_tags_for_context = [
+        {**lt, "profile_status": profile_status_by_tag[lt["tag"]]}
+        if lt["tag"] in profile_status_by_tag else lt
+        for lt in leak_tags
+    ]
+    context = {
         "stats_snapshot": stats_snapshot,
         "session_dynamics": session_dynamics,
-        "leak_tags": leak_tags,
-    })
+        "leak_tags": leak_tags_for_context,
+    }
+    if player_profile is not None:
+        context["player_profile"] = player_profile
+    pinned_context = json.dumps(context)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -145,6 +182,6 @@ async def run_synthesis(
         log_context={"game_id": str(game_id), "user_id": str(user.id)},
     )
 
-    report = _parse_report(result.final_text, leak_tags)
+    report = _parse_report(result.final_text, leak_tags, profile_status_by_tag)
 
     return {"report": report, "tool_calls": result.tool_calls, "usage": result.usage}

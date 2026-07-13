@@ -145,3 +145,73 @@ def test_run_synthesis_drops_unknown_tag_and_survives_malformed_json(db_session,
     ))
 
     assert result["report"]["sections"] == []
+
+
+def test_run_synthesis_includes_player_profile_and_attaches_profile_status(db_session, monkeypatch):
+    db = db_session
+    user = _make_user(db)
+    game, hero_gp, villain_gp = _make_game(db, user)
+
+    captured_messages = {}
+
+    async def _fake_chat_model_with_usage(**kwargs):
+        captured_messages["messages"] = kwargs["messages"]
+        report = {
+            "summary": "x",
+            "sections": [{"tag": "missed_fold", "narrative": "returning leak narrative"}],
+        }
+        return StreamResult(text=json.dumps(report), usage=TokenUsage())
+
+    monkeypatch.setattr(
+        "ai_functions.tools.loop.chat_model_with_usage",
+        _fake_chat_model_with_usage,
+    )
+
+    player_profile = {
+        "evaluations_folded": 2,
+        "leaks": [{"tag": "missed_fold", "status": "confirmed"}],
+        "trends": {},
+        "playstyle_summary": "Plays tight.",
+    }
+
+    result = asyncio.run(run_synthesis(
+        stats_snapshot={}, session_dynamics={}, leak_tags=_LEAK_TAGS,
+        db=db, game_id=str(game.id), user=user,
+        player_profile=player_profile,
+        profile_status_by_tag={"missed_fold": "returning"},
+    ))
+
+    pinned_context = json.loads(captured_messages["messages"][1]["content"])
+    assert pinned_context["player_profile"] == player_profile
+    assert pinned_context["leak_tags"][0]["profile_status"] == "returning"
+
+    sections = result["report"]["sections"]
+    assert sections[0]["tag"] == "missed_fold"
+    assert sections[0]["profile_status"] == "returning"
+
+
+def test_run_synthesis_omits_player_profile_key_when_none(db_session, monkeypatch):
+    db = db_session
+    user = _make_user(db)
+    game, hero_gp, villain_gp = _make_game(db, user)
+
+    captured_messages = {}
+
+    async def _fake_chat_model_with_usage(**kwargs):
+        captured_messages["messages"] = kwargs["messages"]
+        report = {"summary": "x", "sections": [{"tag": "missed_fold", "narrative": "n"}]}
+        return StreamResult(text=json.dumps(report), usage=TokenUsage())
+
+    monkeypatch.setattr(
+        "ai_functions.tools.loop.chat_model_with_usage",
+        _fake_chat_model_with_usage,
+    )
+
+    result = asyncio.run(run_synthesis(
+        stats_snapshot={}, session_dynamics={}, leak_tags=_LEAK_TAGS,
+        db=db, game_id=str(game.id), user=user,
+    ))
+
+    pinned_context = json.loads(captured_messages["messages"][1]["content"])
+    assert "player_profile" not in pinned_context
+    assert result["report"]["sections"][0]["profile_status"] is None

@@ -384,6 +384,20 @@ class GameEvaluation(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Opt-out of the profile fold (decision 2/3) — set/cleared by the discard/
+    # restore routes; never mutated by anything else.
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Tag names the user disputed on this evaluation's report — skipped
+    # individually by the fold, regardless of whether the evaluation itself
+    # is folded.
+    disputed_tags: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    # Set when the user first opens this evaluation's report (for the
+    # unviewed-report popup); never cleared.
+    viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Bookkeeping only — when this evaluation was last folded into the
+    # profile. The fold's inclusion rule (decision 2) is the source of truth
+    # for what's actually in the profile, not this column.
+    folded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     game: Mapped["Game"] = relationship()
     user: Mapped["User"] = relationship()
@@ -420,3 +434,30 @@ class GameEvaluationBatch(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     evaluation: Mapped["GameEvaluation"] = relationship(back_populates="batches")
+
+
+class PlayerProfile(Base):
+    """The long-term coaching profile: one row per user, a deterministic fold
+    over their evaluation history (see ai_functions.memory.fold). Never
+    hand-edited — every field here is either derived by rebuild_profile() or,
+    for playstyle_summary, regenerated wholesale after every fold/rebuild.
+    """
+
+    __tablename__ = "player_profiles"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    evaluations_folded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Per-tag trend-state records (list[dict]) — see fold.py for the shape.
+    leaks: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    playstyle_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # This IS the reset mechanism: the fold ignores evaluations completed
+    # before this timestamp. Reset never mutates evaluation rows.
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    user: Mapped["User"] = relationship()

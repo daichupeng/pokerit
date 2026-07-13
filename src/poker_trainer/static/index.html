@@ -175,6 +175,9 @@
             <button id="pf-save" class="btn primary">Save changes</button>
             <button id="pf-delete" class="btn danger ghost">Delete account</button>
           </div>
+          <div class="row" style="margin-top: 0.8rem">
+            <button id="pf-go-coaching" class="btn ghost">View coaching profile</button>
+          </div>
         </div>
       </div>
     </section>
@@ -184,8 +187,13 @@
     <section class="screen">
       <header class="topbar">
         <button id="history-back" class="topbar-home">♠ Poker Trainer</button>
+        <button id="history-go-coaching" class="topbar-coach-btn" title="Coaching Profile">
+          <img src="/static/assets/ai_coach_icon.png" class="topbar-coach-icon" alt="" />
+          Coaching Profile
+        </button>
       </header>
       <div class="main-body">
+        <div id="unviewed-banner"></div>
         <div class="card-panel">
           <h2>Your games</h2>
           <div id="history-list" class="games-list">
@@ -236,7 +244,38 @@
           <div class="eval-progress-bar"><div id="eval-progress-fill" class="eval-progress-fill"></div></div>
         </div>
         <div id="eval-error" class="error hidden"></div>
+        <div id="eval-toolbar" class="eval-toolbar hidden">
+          <button id="eval-discard-btn" class="btn tiny ghost">Discard</button>
+        </div>
         <div id="eval-report" class="eval-report hidden"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-coaching-profile">
+    <section class="screen">
+      <header class="topbar">
+        <button id="coaching-back" class="topbar-home">♠ Poker Trainer</button>
+      </header>
+      <div class="main-body">
+        <div class="card-panel">
+          <h2>Coaching Profile</h2>
+          <p id="coaching-count" class="muted tiny"></p>
+          <div id="coaching-summary"></div>
+
+          <h3 class="coaching-section-title">Trends</h3>
+          <div id="coaching-trends"></div>
+
+          <h3 class="coaching-section-title">Active leaks</h3>
+          <div id="coaching-active-leaks"></div>
+
+          <h3 class="coaching-section-title">Resolved (progress)</h3>
+          <div id="coaching-resolved-leaks"></div>
+
+          <div class="row" style="margin-top: 1.5rem">
+            <button id="coaching-reset-btn" class="btn danger ghost">Reset coaching profile</button>
+          </div>
+        </div>
       </div>
     </section>
   </template>
@@ -307,6 +346,6 @@
   </template>
 
   <script src="/static/js/table.js?v=5"></script>
-  <script src="/static/js/app.js?v=5"></script>
+  <script src="/static/js/app.js?v=6"></script>
 </body>
 </html>

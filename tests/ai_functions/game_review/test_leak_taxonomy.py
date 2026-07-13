@@ -142,3 +142,40 @@ def test_unknown_tag_raises():
 
     with pytest.raises(ValueError):
         leak_taxonomy.severity_for_stat_tag("not_a_real_tag", _base_display())
+
+
+def test_stat_tag_opportunity_single_stat():
+    display = _base_display(vpip=_stat(pct=25, n=25, d=42))
+    assert leak_taxonomy.stat_tag_opportunity("low_vpip", display) == 42
+    assert leak_taxonomy.stat_tag_opportunity("high_vpip", display) == 42
+
+
+def test_stat_tag_opportunity_none_when_stat_missing():
+    display = _base_display()
+    del display["vpip"]
+    assert leak_taxonomy.stat_tag_opportunity("low_vpip", display) is None
+
+
+def test_stat_tag_opportunity_gap_tag_uses_vpip_denominator():
+    display = _base_display(vpip=_stat(pct=25, n=25, d=77))
+    assert leak_taxonomy.stat_tag_opportunity("limps_too_wide", display) == 77
+
+
+def test_stat_tag_opportunity_positional_tag_uses_min_of_ep_lp():
+    display = _base_display(by_position={
+        "UTG": {"vpip": _stat(pct=15, n=3, d=20)},
+        "BTN": {"vpip": _stat(pct=40, n=8, d=50)},
+    })
+    assert leak_taxonomy.stat_tag_opportunity("positional_looseness", display) == 20
+
+
+def test_stat_tag_opportunity_positional_tag_none_without_position_data():
+    display = _base_display(by_position={})
+    assert leak_taxonomy.stat_tag_opportunity("positional_looseness", display) is None
+
+
+def test_stat_tag_opportunity_unknown_tag_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        leak_taxonomy.stat_tag_opportunity("not_a_real_tag", _base_display())
