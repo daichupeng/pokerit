@@ -43,7 +43,11 @@
       "Bash(python -c \"import sys; sys.path.insert\\(0,'src'\\); import poker_engine.stats; print\\('ok'\\)\")",
       "Bash(pg_isready)",
       "Bash(env)",
-      "Bash(break)"
+      "Bash(break)",
+      "Bash(xargs -I{} basename {})",
+      "Bash(python3 -c \"import openai; print\\(openai.__version__\\)\")",
+      "Bash(python3 -c \"import pytest_asyncio; print\\(pytest_asyncio.__version__\\)\")",
+      "Bash(python3 -m pytest tests/ai_functions/ -v)"
     ]
   }
 }

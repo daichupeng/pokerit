@@ -87,6 +87,11 @@ class StreamResult:
     """Holds the accumulated text and token usage from a streaming call."""
     text: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
+    # Populated only for non-streaming OpenAI calls made with ``tools=``.
+    # Each entry mirrors the SDK's ``ChatCompletionMessageToolCall`` shape as
+    # a plain dict: {"id", "name", "arguments"} (arguments is the raw JSON
+    # string the model produced, unparsed).
+    tool_calls: list[dict] | None = None
 
 
 async def _stream_openai_chat_with_usage(
@@ -318,8 +323,13 @@ async def chat_model_with_usage(
     temperature: float = 0.7,
     log_context: dict | None = None,
     reasoning_effort: str = "low",
+    tools: list[dict] | None = None,
 ) -> StreamResult:
-    """Return a completed chat response and token usage without streaming."""
+    """Return a completed chat response and token usage without streaming.
+
+    ``tools`` (OpenAI function-calling schemas) is only honored on the OpenAI
+    branch below — Minimax and Ollama models never receive it.
+    """
     call_id = str(uuid.uuid4())
     t_start = time.monotonic()
 
@@ -334,6 +344,7 @@ async def chat_model_with_usage(
         backend = "openai"
     usage = TokenUsage()
     text = ""
+    tool_calls: list[dict] | None = None
     status = "ok"
 
     try:
@@ -357,6 +368,8 @@ async def chat_model_with_usage(
             extra = {"reasoning_effort": reasoning_effort} if _is_reasoning_model(model) else {}
             if _supports_temperature(model):
                 extra["temperature"] = temperature
+            if tools:
+                extra["tools"] = tools
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -366,7 +379,13 @@ async def chat_model_with_usage(
             )
 
         if response.choices:
-            text = response.choices[0].message.content or ""
+            message = response.choices[0].message
+            text = message.content or ""
+            if getattr(message, "tool_calls", None):
+                tool_calls = [
+                    {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
+                    for tc in message.tool_calls
+                ]
         else:
             text = ""
 
@@ -395,7 +414,7 @@ async def chat_model_with_usage(
             },
         )
 
-    return StreamResult(text=text, usage=usage)
+    return StreamResult(text=text, usage=usage, tool_calls=tool_calls)
 
 
 async def chat_model(
