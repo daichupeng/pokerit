@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "openai>=1.30",
     "minimax>=0.0.2",
+    "arq>=0.28.0",
 ]
 
 [project.optional-dependencies]

@@ -275,28 +275,13 @@ def game_stats(
     return stats.to_display(counts)
 
 
-@router.get("/games/{game_id}/hands/{round_count}")
-def hand_detail(
-    game_id: str,
-    round_count: int,
-    user: User = Depends(require_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    game = _load_owned_game(db, game_id, user)
-    hero = _hero_seat(game)
-    hero_gp_id = hero.id if hero else None
+def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
+    """Build the hand-detail dict from already-loaded ``Game``/``Hand`` ORM objects.
 
-    hand = db.execute(
-        select(Hand)
-        .where(Hand.game_id == game.id, Hand.round_count == round_count)
-        .options(
-            selectinload(Hand.players),
-            selectinload(Hand.actions),
-        )
-    ).scalar_one_or_none()
-    if hand is None:
-        raise HTTPException(404, "Hand not found.")
-
+    Split out of ``hand_detail()`` so callers that already hold these objects
+    (e.g. the game-review pipeline's triaged hands) don't need to re-query the
+    DB by ``(game_id, round_count)`` per hand.
+    """
     # game_player_id -> seat metadata, for naming actions/players.
     seat_by_gp = {gp.id: gp for gp in game.players}
 
@@ -504,6 +489,31 @@ def hand_detail(
         "showdown_hands": showdown_hands,
         "button_pos": hand.button_pos,
     }
+
+
+@router.get("/games/{game_id}/hands/{round_count}")
+def hand_detail(
+    game_id: str,
+    round_count: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    game = _load_owned_game(db, game_id, user)
+    hero = _hero_seat(game)
+    hero_gp_id = hero.id if hero else None
+
+    hand = db.execute(
+        select(Hand)
+        .where(Hand.game_id == game.id, Hand.round_count == round_count)
+        .options(
+            selectinload(Hand.players),
+            selectinload(Hand.actions),
+        )
+    ).scalar_one_or_none()
+    if hand is None:
+        raise HTTPException(404, "Hand not found.")
+
+    return _build_hand_detail(game, hand, hero_gp_id)
 
 
 @router.get("/games/{game_id}/hands/{round_count}/context")

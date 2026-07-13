@@ -171,6 +171,140 @@
     el.innerHTML = `<div class="hands-stats-row">${gameHTML}${careerHTML}</div>`;
   }
 
+  // ---------- game evaluation (coach agent) ----------
+  function evalStatusBadgeHTML(status) {
+    return `<span class="eval-status ${status}">${status}</span>`;
+  }
+
+  async function loadEvalHistory(gameId) {
+    const el = document.getElementById("eval-history-list");
+    if (!el) return;
+    try {
+      const evaluations = await api(`/api/games/${gameId}/evaluations`);
+      el.innerHTML = "";
+      evaluations.forEach((e) => {
+        const row = document.createElement("button");
+        row.className = "eval-history-row";
+        row.innerHTML = `<span>${fmtDate(e.created_at)}</span>${evalStatusBadgeHTML(e.status)}`;
+        row.onclick = () => (location.hash = `#/history/${gameId}/eval/${e.evaluation_id}`);
+        el.appendChild(row);
+      });
+    } catch (e) {
+      el.innerHTML = "";
+    }
+  }
+
+  function wireEvaluateButton(gameId, handCount) {
+    const btn = document.getElementById("evaluate-game-btn");
+    if (!btn) return;
+    btn.onclick = async () => {
+      if (handCount < 10) {
+        const proceed = confirm(
+          `This game only has ${handCount} hand${handCount === 1 ? "" : "s"} — evaluate anyway?`
+        );
+        if (!proceed) return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await api(`/api/games/${gameId}/evaluate`, { method: "POST" });
+        location.hash = `#/history/${gameId}/eval/${res.evaluation_id}`;
+      } catch (e) {
+        alert("Could not start evaluation: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    loadEvalHistory(gameId);
+  }
+
+  let _evalPollTimer = null;
+
+  function stopEvalPolling() {
+    if (_evalPollTimer) { clearInterval(_evalPollTimer); _evalPollTimer = null; }
+  }
+
+  function renderEvalReport(full) {
+    const box = document.getElementById("eval-report");
+    box.classList.remove("hidden");
+    const sections = (full.report && full.report.sections) || [];
+    let html = `<div class="eval-summary">${(full.report && full.report.summary) || ""}</div>`;
+    sections.forEach((s) => {
+      const citations = (s.citations || []).map((c) => {
+        const round = typeof c === "object" ? c.round_count : c;
+        return `<button class="eval-citation-chip" data-round="${round}">Hand #${round}</button>`;
+      }).join("");
+      html += `<div class="eval-section-card">
+        <div class="eval-section-head">
+          <span class="eval-tag">${titleCase((s.tag || "").replace(/_/g, " "))}</span>
+          <span class="eval-severity sev-${s.severity}">severity ${s.severity}</span>
+        </div>
+        <p>${s.narrative || ""}</p>
+        <div class="eval-citations">${citations}</div>
+      </div>`;
+    });
+    box.innerHTML = html;
+    box.querySelectorAll(".eval-citation-chip").forEach((chip) => {
+      chip.onclick = () => (location.hash = `#/history/${full.game_id_for_link}/${chip.dataset.round}`);
+    });
+  }
+
+  async function showEvaluation(gameId, evalId) {
+    if (!state.user) { location.hash = "#/login"; return; }
+    screen("evaluation");
+    document.getElementById("eval-back").onclick = () => (location.hash = `#/history/${gameId}`);
+    stopEvalPolling();
+
+    const progressBox = document.getElementById("eval-progress");
+    const progressLabel = document.getElementById("eval-progress-label");
+    const progressFill = document.getElementById("eval-progress-fill");
+    const errorBox = document.getElementById("eval-error");
+
+    async function poll() {
+      let status;
+      try {
+        status = await api(`/api/games/${gameId}/evaluations/${evalId}/status`);
+      } catch (e) {
+        stopEvalPolling();
+        errorBox.textContent = "Could not load evaluation status: " + e.message;
+        errorBox.classList.remove("hidden");
+        return;
+      }
+
+      if (status.status === "PENDING" || status.status === "RUNNING") {
+        progressBox.classList.remove("hidden");
+        const pct = status.progress_total
+          ? Math.round((100 * status.progress_current) / status.progress_total) : 0;
+        progressLabel.textContent =
+          `${titleCase(status.current_stage || "starting")}… (${status.progress_current}/${status.progress_total})`;
+        progressFill.style.width = pct + "%";
+        return;
+      }
+
+      stopEvalPolling();
+      progressBox.classList.add("hidden");
+
+      if (status.status === "FAILED") {
+        errorBox.textContent = "Evaluation failed: " + (status.error || "unknown error");
+        errorBox.classList.remove("hidden");
+        return;
+      }
+
+      // Completed — fetch the full record and render the report.
+      let full;
+      try { full = await api(`/api/games/${gameId}/evaluations/${evalId}`); }
+      catch (e) {
+        errorBox.textContent = "Could not load report: " + e.message;
+        errorBox.classList.remove("hidden");
+        return;
+      }
+      full.game_id_for_link = gameId;
+      renderEvalReport(full);
+    }
+
+    await poll();
+    _evalPollTimer = setInterval(poll, 2000);
+  }
+
   async function showGameHands(gameId, autoRound) {
     if (!state.user) { location.hash = "#/login"; return; }
     screen("game-hands");
@@ -183,6 +317,7 @@
       list.innerHTML = `<p class="error">Could not load game: ${e.message}</p>`;
       return;
     }
+    wireEvaluateButton(gameId, data.hands.length);
     if (!data.hands.length) {
       list.innerHTML = `<p class="muted">This game has no recorded hands.</p>`;
       return;
@@ -689,7 +824,8 @@
     if (hash === "#/history") return showHistory();
     if (hash.startsWith("#/history/")) {
       const parts = hash.slice("#/history/".length).split("/");
-      // parts[0] = gameId, parts[1] (optional) = round to auto-select
+      // parts[0] = gameId, then either "eval/<evalId>" or an optional round to auto-select.
+      if (parts[1] === "eval" && parts[2]) return showEvaluation(parts[0], parts[2]);
       return showGameHands(parts[0], parts[1] ? parseInt(parts[1], 10) : null);
     }
     if (hash.startsWith("#/login")) return showLogin();

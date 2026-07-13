@@ -41,6 +41,70 @@ def make_equity_calculator_tool() -> Callable[[list[str], list[str], int], dict]
     return _equity_calculator
 
 
+def make_pot_odds_tool() -> Callable[[int, int], dict]:
+    def _pot_odds(pot_size: int, amount_to_call: int) -> dict:
+        denominator = pot_size + amount_to_call
+        required_equity_pct = round(100 * amount_to_call / denominator, 1) if denominator else 0.0
+        return {"required_equity_pct": required_equity_pct}
+
+    return _pot_odds
+
+
+def make_hand_search_tool(db: Session, game_id: str, user: User) -> Callable[..., dict]:
+    def _hand_search(
+        street_reached: str | None = None,
+        had_showdown: bool | None = None,
+        hero_action_type: str | None = None,
+        min_pot: int | None = None,
+        max_pot: int | None = None,
+    ) -> dict:
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from poker_engine.db.models import Hand
+        from poker_trainer.api.games import _hero_seat, _load_owned_game
+
+        game = _load_owned_game(db, game_id, user)
+        hero = _hero_seat(game)
+        hero_gp_id = hero.id if hero else None
+
+        hands = db.execute(
+            select(Hand)
+            .where(Hand.game_id == game.id)
+            .options(selectinload(Hand.actions))
+            .order_by(Hand.round_count)
+        ).scalars().all()
+
+        results = []
+        for hand in hands:
+            if street_reached is not None and hand.street_reached.value != street_reached:
+                continue
+            if had_showdown is not None and hand.had_showdown != had_showdown:
+                continue
+            if min_pot is not None and hand.pot_total < min_pot:
+                continue
+            if max_pot is not None and hand.pot_total > max_pot:
+                continue
+            if hero_action_type is not None:
+                took_action = any(
+                    a.game_player_id == hero_gp_id and a.action == hero_action_type
+                    for a in hand.actions
+                )
+                if not took_action:
+                    continue
+
+            summary = (
+                f"round {hand.round_count}: reached {hand.street_reached.value}, "
+                f"pot {hand.pot_total}"
+                + (", showdown" if hand.had_showdown else "")
+            )
+            results.append({"round_count": hand.round_count, "summary": summary})
+
+        return {"hands": results}
+
+    return _hand_search
+
+
 def make_stats_query_tool(db: Session, game_id: str, user: User) -> Callable[..., dict]:
     def _stats_query(position: str | None = None, street: str | None = None) -> dict:
         from poker_trainer.api.games import _hero_seat, _load_owned_game

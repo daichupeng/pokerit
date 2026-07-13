@@ -105,4 +105,79 @@ STATS_QUERY_SCHEMA = {
     },
 }
 
-ALL_TOOL_SCHEMAS = [HAND_LOOKUP_SCHEMA, EQUITY_CALCULATOR_SCHEMA, STATS_QUERY_SCHEMA]
+POT_ODDS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "pot_odds",
+        "description": (
+            "Compute the equity required to profitably call a bet, given the "
+            "current pot size and the amount needed to call. Pure arithmetic "
+            "— use this instead of estimating pot odds yourself."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pot_size": {
+                    "type": "integer",
+                    "description": "Total pot size before the call (chips).",
+                },
+                "amount_to_call": {
+                    "type": "integer",
+                    "description": "The amount hero must put in to call (chips).",
+                },
+            },
+            "required": ["pot_size", "amount_to_call"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+HAND_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "hand_search",
+        "description": (
+            "Search the current game's hands by street reached, showdown, "
+            "hero action type, or pot-size range. Returns round numbers and "
+            "one-line summaries, not full hand transcripts — use hand_lookup "
+            "for the full detail of a specific hand."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "street_reached": {
+                    "type": "string",
+                    "enum": ["preflop", "flop", "turn", "river", "showdown"],
+                    "description": "Optional: restrict to hands that reached this street.",
+                },
+                "had_showdown": {
+                    "type": "boolean",
+                    "description": "Optional: restrict to hands that did/didn't reach showdown.",
+                },
+                "hero_action_type": {
+                    "type": "string",
+                    "enum": ["fold", "call", "raise", "check"],
+                    "description": "Optional: restrict to hands where hero took this action type at least once.",
+                },
+                "min_pot": {
+                    "type": "integer",
+                    "description": "Optional: minimum pot_total (chips), inclusive.",
+                },
+                "max_pot": {
+                    "type": "integer",
+                    "description": "Optional: maximum pot_total (chips), inclusive.",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+}
+
+ALL_TOOL_SCHEMAS = [
+    HAND_LOOKUP_SCHEMA,
+    EQUITY_CALCULATOR_SCHEMA,
+    STATS_QUERY_SCHEMA,
+    POT_ODDS_SCHEMA,
+    HAND_SEARCH_SCHEMA,
+]

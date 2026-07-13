@@ -49,6 +49,18 @@ services:
       ollama:
         condition: service_healthy
 
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
   app:
     build: .
     image: poker-trainer:latest
@@ -57,6 +69,8 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     # Secrets (Google OAuth client, session secret) come from .env (gitignored).
     # See .env.example. DATABASE_URL falls back here if not set in .env.
     env_file:
@@ -64,6 +78,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
       OLLAMA_BASE_URL: http://ollama:11434
+      REDIS_URL: redis://redis:6379
       LOG_DIR: /app/logs
       LOG_LEVEL: INFO
       LOG_JSON: "1"
@@ -83,6 +98,35 @@ services:
       - ./logs:/app/logs
     ports:
       - "8000:8000"
+
+  worker:
+    build: .
+    image: poker-trainer:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://poker:poker@db:5432/poker
+      OLLAMA_BASE_URL: http://ollama:11434
+      REDIS_URL: redis://redis:6379
+      LOG_DIR: /app/logs
+      LOG_LEVEL: INFO
+      LOG_JSON: "1"
+    # Runs the game-evaluation background pipeline (Stage 4 of the coach agent).
+    command: uv run arq poker_trainer.worker.WorkerSettings
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+      - /app/.venv
+      - ./logs:/app/logs
 
   pgadmin:
     image: dpage/pgadmin4:latest

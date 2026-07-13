@@ -463,3 +463,44 @@ textarea { background: var(--bg); border: 1px solid #333c48; color: var(--text);
   border-radius: 8px; padding: 0.5rem 0.6rem; font: inherit; font-size: 0.88rem;
   resize: none; min-height: 2.6rem; max-height: 7rem;
 }
+
+/* Game evaluation (coach-agent Stage 5): sidebar section + report screen. */
+.eval-section {
+  border-bottom: 1px solid #222a33; padding-bottom: 0.6rem; margin-bottom: 0.4rem;
+  display: flex; flex-direction: column; gap: 0.4rem;
+}
+.eval-history-list { display: flex; flex-direction: column; gap: 0.3rem; }
+.eval-history-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.78rem; padding: 0.35rem 0.5rem; border-radius: 8px;
+  border: 1px solid #2a323d; background: transparent; color: var(--text);
+  cursor: pointer; text-align: left;
+}
+.eval-history-row:hover { border-color: var(--gold); }
+.eval-status { font-size: 0.72rem; padding: 0.1rem 0.4rem; border-radius: 6px; }
+.eval-status.COMPLETED { background: #1f7a4d; }
+.eval-status.FAILED { background: var(--danger); }
+.eval-status.RUNNING, .eval-status.PENDING { background: #394250; }
+
+.eval-body { padding: 1.5rem; max-width: 760px; width: 100%; margin: 0 auto; }
+.eval-progress-bar {
+  width: 100%; height: 10px; border-radius: 6px; background: #222a33; overflow: hidden; margin-top: 0.4rem;
+}
+.eval-progress-fill { height: 100%; background: var(--gold); transition: width 0.3s ease; }
+
+.eval-summary { font-size: 0.95rem; margin-bottom: 1rem; }
+.eval-section-card {
+  border: 1px solid #2a323d; border-radius: 10px; padding: 0.9rem 1.1rem; margin-bottom: 0.8rem;
+}
+.eval-section-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.eval-tag { font-weight: 700; }
+.eval-severity { font-size: 0.72rem; padding: 0.1rem 0.5rem; border-radius: 6px; }
+.eval-severity.sev-1 { background: #394250; }
+.eval-severity.sev-2 { background: var(--warn); color: #1b1b1b; }
+.eval-severity.sev-3 { background: var(--danger); }
+.eval-citations { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+.eval-citation-chip {
+  font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 6px;
+  border: 1px solid #2a323d; background: transparent; color: var(--gold); cursor: pointer;
+}
+.eval-citation-chip:hover { border-color: var(--gold); }

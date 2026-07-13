@@ -208,6 +208,10 @@
       <div class="hands-split">
         <div class="hands-sidebar">
           <div id="hands-stats" class="hands-stats"></div>
+          <div class="eval-section">
+            <button id="evaluate-game-btn" class="btn tiny">Evaluate Game</button>
+            <div id="eval-history-list" class="eval-history-list"></div>
+          </div>
           <div id="hands-list" class="games-list">
             <p class="muted">Loading…</p>
           </div>
@@ -217,6 +221,22 @@
             <p class="muted" style="padding:1.5rem">Select a hand to view details.</p>
           </div>
         </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-evaluation">
+    <section class="screen hands-screen">
+      <header class="topbar">
+        <button id="eval-back" class="topbar-home">♠ Poker Trainer</button>
+      </header>
+      <div class="eval-body">
+        <div id="eval-progress" class="eval-progress hidden">
+          <p id="eval-progress-label" class="muted">Starting…</p>
+          <div class="eval-progress-bar"><div id="eval-progress-fill" class="eval-progress-fill"></div></div>
+        </div>
+        <div id="eval-error" class="error hidden"></div>
+        <div id="eval-report" class="eval-report hidden"></div>
       </div>
     </section>
   </template>

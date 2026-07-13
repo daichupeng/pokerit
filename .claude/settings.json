@@ -47,7 +47,20 @@
       "Bash(xargs -I{} basename {})",
       "Bash(python3 -c \"import openai; print\\(openai.__version__\\)\")",
       "Bash(python3 -c \"import pytest_asyncio; print\\(pytest_asyncio.__version__\\)\")",
-      "Bash(python3 -m pytest tests/ai_functions/ -v)"
+      "Bash(python3 -m pytest tests/ai_functions/ -v)",
+      "Bash(python3 -c \"import ai_functions.game_review; print\\(ai_functions.game_review.__file__\\)\")",
+      "Bash(PYTHONPATH=src uv run pytest tests/ai_functions/test_executors.py -v)",
+      "Bash(xargs ls -la)",
+      "Bash(.venv/bin/python -c \"import pydantic; print\\(pydantic.VERSION\\)\")",
+      "Bash(python3 -c \"import pydantic; print\\(pydantic.VERSION\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/poker_trainer/api/games.py'\\).read\\(\\)\\)\")",
+      "Bash(python -m pytest tests/ai_functions -q)",
+      "Bash(echo \"---exit $?\")",
+      "Bash(find / -maxdepth 0)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/poker_engine/db/models.py'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('migrations/versions/0007_game_evaluations.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"print\\('empty' if open\\('/Users/chupeng/Documents/Meng_CCDS/PokerTrainer/src/poker_trainer/api/__init__.py'\\).read\\(\\).strip\\(\\)=='' else 'not empty'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/ai_functions/game_review/pipeline.py'\\).read\\(\\)\\)\")"
     ]
   }
 }

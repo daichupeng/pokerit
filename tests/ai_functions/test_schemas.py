@@ -8,6 +8,8 @@ from ai_functions.tools.schemas import (
     ALL_TOOL_SCHEMAS,
     EQUITY_CALCULATOR_SCHEMA,
     HAND_LOOKUP_SCHEMA,
+    HAND_SEARCH_SCHEMA,
+    POT_ODDS_SCHEMA,
     STATS_QUERY_SCHEMA,
 )
 
@@ -17,6 +19,17 @@ _FORBIDDEN = {"game_id", "user_id"}
 def test_hand_lookup_schema_excludes_scoping_params():
     props = HAND_LOOKUP_SCHEMA["function"]["parameters"]["properties"]
     assert set(props) == {"round_count"}
+    assert _FORBIDDEN.isdisjoint(props)
+
+
+def test_pot_odds_schema_excludes_scoping_params():
+    props = POT_ODDS_SCHEMA["function"]["parameters"]["properties"]
+    assert set(props) == {"pot_size", "amount_to_call"}
+    assert _FORBIDDEN.isdisjoint(props)
+
+
+def test_hand_search_schema_excludes_scoping_params():
+    props = HAND_SEARCH_SCHEMA["function"]["parameters"]["properties"]
     assert _FORBIDDEN.isdisjoint(props)
 
 

@@ -10,6 +10,8 @@ import random
 from ai_functions.tools.executors import (
     make_equity_calculator_tool,
     make_hand_lookup_tool,
+    make_hand_search_tool,
+    make_pot_odds_tool,
     make_stats_query_tool,
 )
 from poker_engine import pk_adapter, stats
@@ -142,3 +144,69 @@ def test_equity_calculator_tool_matches_mc_win_rate_and_labels_random_opponent()
     assert 0.0 <= result["win_rate"] <= 1.0
     assert "random opponent" in result["note"].lower()
     assert 0.0 <= expected <= 1.0
+
+
+def test_pot_odds_tool_computes_required_equity():
+    tool = make_pot_odds_tool()
+
+    # Pot of 100, call of 50: required equity = 50 / (100+50) = 33.3%
+    result = tool(pot_size=100, amount_to_call=50)
+
+    assert result["required_equity_pct"] == 33.3
+
+
+def test_pot_odds_tool_handles_zero_denominator():
+    tool = make_pot_odds_tool()
+    result = tool(pot_size=0, amount_to_call=0)
+    assert result["required_equity_pct"] == 0.0
+
+
+def test_hand_search_tool_filters_by_street_reached(db_session):
+    db = db_session
+    user = _make_user(db)
+    game, hero_gp, villain_gp = _make_game(db, user)
+    _add_hand(db, game, hero_gp, villain_gp, round_count=0)
+
+    tool = make_hand_search_tool(db, str(game.id), user)
+    result = tool(street_reached="preflop")
+
+    assert len(result["hands"]) == 1
+    assert result["hands"][0]["round_count"] == 0
+
+    result_none = tool(street_reached="river")
+    assert result_none["hands"] == []
+
+
+def test_hand_search_tool_filters_by_hero_action_type(db_session):
+    db = db_session
+    user = _make_user(db)
+    game, hero_gp, villain_gp = _make_game(db, user)
+    _add_hand(db, game, hero_gp, villain_gp, round_count=0, hero_action="raise")
+    _add_hand(db, game, hero_gp, villain_gp, round_count=1, hero_action="call")
+
+    tool = make_hand_search_tool(db, str(game.id), user)
+
+    raises = tool(hero_action_type="raise")
+    assert [h["round_count"] for h in raises["hands"]] == [0]
+
+    calls = tool(hero_action_type="call")
+    assert [h["round_count"] for h in calls["hands"]] == [1]
+
+
+def test_hand_search_tool_filters_by_pot_range(db_session):
+    db = db_session
+    user = _make_user(db)
+    game, hero_gp, villain_gp = _make_game(db, user)
+    hand0 = _add_hand(db, game, hero_gp, villain_gp, round_count=0)
+    hand0.pot_total = 100
+    hand1 = _add_hand(db, game, hero_gp, villain_gp, round_count=1)
+    hand1.pot_total = 5000
+    db.flush()
+
+    tool = make_hand_search_tool(db, str(game.id), user)
+
+    result = tool(min_pot=1000)
+    assert [h["round_count"] for h in result["hands"]] == [1]
+
+    result = tool(max_pot=1000)
+    assert [h["round_count"] for h in result["hands"]] == [0]

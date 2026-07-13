@@ -68,6 +68,19 @@ class AuthProvider(str, enum.Enum):
     GOOGLE = "GOOGLE"
 
 
+class EvaluationStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class BatchStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 def _uuid() -> uuid.UUID:
     return uuid.uuid4()
 
@@ -341,3 +354,69 @@ class Action(Base):
 
     hand: Mapped["Hand"] = relationship(back_populates="actions")
     game_player: Mapped["GamePlayer"] = relationship(back_populates="actions")
+
+
+class GameEvaluation(Base):
+    """A game-level coaching evaluation run (background job, resumable)."""
+
+    __tablename__ = "game_evaluations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    game_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("games.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    status: Mapped[EvaluationStatus] = mapped_column(
+        Enum(EvaluationStatus), default=EvaluationStatus.PENDING, server_default=EvaluationStatus.PENDING.value
+    )
+    # Frozen Phase 1 to_display() output (game-level + session-dynamics splits)
+    # at evaluation time: {"game_level": {...}, "session_dynamics": {...}}.
+    stats_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Final merged leak tags (list[dict]) — see merge.merge_findings().
+    leak_tags: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Synthesis output: {"summary": str, "sections": [...]}.
+    report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    model_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    progress_current: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    # "analytics" | "review" | "synthesis"
+    current_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    game: Mapped["Game"] = relationship()
+    user: Mapped["User"] = relationship()
+    batches: Mapped[list["GameEvaluationBatch"]] = relationship(
+        back_populates="evaluation", cascade="all, delete-orphan"
+    )
+
+
+class GameEvaluationBatch(Base):
+    """One street-agent batch's checkpointed progress within a GameEvaluation."""
+
+    __tablename__ = "game_evaluation_batches"
+    __table_args__ = (
+        UniqueConstraint("evaluation_id", "agent", "batch_index", name="uq_eval_agent_batch"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    evaluation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("game_evaluations.id"), index=True
+    )
+    agent: Mapped[str] = mapped_column(String(10))  # preflop | flop | turn | river
+    batch_index: Mapped[int] = mapped_column(Integer)
+    status: Mapped[BatchStatus] = mapped_column(
+        Enum(BatchStatus), default=BatchStatus.PENDING, server_default=BatchStatus.PENDING.value
+    )
+    # Hand UUID strings in this batch — audit trail + what to reload on resume.
+    hand_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    # Validated findings for this batch (list[dict]), once completed.
+    output: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    evaluation: Mapped["GameEvaluation"] = relationship(back_populates="batches")
