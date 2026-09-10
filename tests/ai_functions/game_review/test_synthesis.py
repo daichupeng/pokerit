@@ -14,7 +14,7 @@ import json
 from poker_engine.db.models import Action, Game, GamePlayer, Hand, HandPlayer, Street, User
 from shared_services.llm import StreamResult, TokenUsage
 
-from ai_functions.game_review.synthesis import run_synthesis
+from ai_functions.game_review.synthesis import normalize_report_evidence, run_synthesis
 
 
 def _make_user(db, email="hero@test.local"):
@@ -63,7 +63,12 @@ def _add_hand(db, game, hero_gp, villain_gp, round_count):
 
 _LEAK_TAGS = [
     {"tag": "missed_fold", "kind": "judgment", "severity": 1,
-     "citations": [{"hand_id": "h1", "round_count": 0, "street": "preflop"}]},
+     "citations": [{
+         "hand_id": "h1", "round_count": 0, "street": "preflop",
+         "hero_action": "called a 3-bet", "issue": "the continue range is too weak",
+         "better_line": "fold", "why": "folding avoids a dominated low-equity pot",
+         "confidence": "high",
+     }]},
     {"tag": "low_vpip", "kind": "stat", "severity": 3,
      "evidence": {"stat": "low_vpip", "pct": 10, "n": 10, "d": 100}},
 ]
@@ -117,6 +122,9 @@ def test_run_synthesis_sorts_sections_by_severity_and_uses_tool_call(db_session,
     assert sections[0]["severity"] == 3
     assert sections[0]["kind"] == "stat"
     assert sections[1]["citations"][0]["round_count"] == 0
+    assert sections[1]["examples"][0]["hero_action"] == "called a 3-bet"
+    assert sections[1]["examples"][0]["better_line"] == "fold"
+    assert sections[1]["examples"][0]["why"]
 
     tool_names = [tc.name for tc in result["tool_calls"]]
     assert "pot_odds" in tool_names
@@ -181,7 +189,7 @@ def test_run_synthesis_includes_player_profile_and_attaches_profile_status(db_se
         profile_status_by_tag={"missed_fold": "returning"},
     ))
 
-    pinned_context = json.loads(captured_messages["messages"][1]["content"])
+    pinned_context = json.loads(captured_messages["messages"][-1]["content"])
     assert pinned_context["player_profile"] == player_profile
     assert pinned_context["leak_tags"][0]["profile_status"] == "returning"
 
@@ -212,6 +220,125 @@ def test_run_synthesis_omits_player_profile_key_when_none(db_session, monkeypatc
         db=db, game_id=str(game.id), user=user,
     ))
 
-    pinned_context = json.loads(captured_messages["messages"][1]["content"])
+    pinned_context = json.loads(captured_messages["messages"][-1]["content"])
     assert "player_profile" not in pinned_context
     assert result["report"]["sections"][0]["profile_status"] is None
+
+
+def test_run_synthesis_pins_sample_status_for_small_sample_wording(db_session, monkeypatch):
+    db = db_session
+    user = _make_user(db)
+    game, _, _ = _make_game(db, user)
+    captured_messages = {}
+
+    async def _fake_chat_model_with_usage(**kwargs):
+        captured_messages["messages"] = kwargs["messages"]
+        return StreamResult(
+            text=json.dumps({"summary": "Early signal only.", "sections": []}),
+            usage=TokenUsage(),
+        )
+
+    monkeypatch.setattr(
+        "ai_functions.tools.loop.chat_model_with_usage",
+        _fake_chat_model_with_usage,
+    )
+    sample_status = {
+        "version": "2026-07-23.v3",
+        "metrics": [{
+            "metric": "W$SD", "observed": 0, "required": 5,
+            "status": "insufficient_sample",
+        }],
+    }
+
+    asyncio.run(run_synthesis(
+        stats_snapshot={"wsd": {"pct": None, "n": 0, "d": 0}},
+        session_dynamics={}, leak_tags=[], sample_status=sample_status,
+        db=db, game_id=str(game.id), user=user,
+    ))
+
+    pinned_context = json.loads(captured_messages["messages"][-1]["content"])
+    assert pinned_context["sample_status"] == sample_status
+
+
+def test_run_synthesis_guards_aggression_factor_operands(db_session, monkeypatch):
+    db = db_session
+    user = _make_user(db)
+    game, _, _ = _make_game(db, user)
+    captured_messages = {}
+    aggression_leak = {
+        "tag": "too_aggressive_postflop",
+        "kind": "stat",
+        "severity": 3,
+        "evidence": {
+            "stat": "too_aggressive_postflop", "ratio": 10.0,
+            "n": 10, "d": 1,
+        },
+    }
+
+    async def _fake_chat_model_with_usage(**kwargs):
+        captured_messages["messages"] = kwargs["messages"]
+        report = {
+            "summary": "AF is 10.0 from 1 aggressive action over 10 passive actions. Focus on control.",
+            "sections": [{
+                "tag": "too_aggressive_postflop",
+                "narrative": (
+                    "The postflop aggression factor is 10.0 based on 1 aggressive action "
+                    "over 10 passive actions. Slow down in marginal spots."
+                ),
+            }],
+        }
+        return StreamResult(text=json.dumps(report), usage=TokenUsage())
+
+    monkeypatch.setattr(
+        "ai_functions.tools.loop.chat_model_with_usage",
+        _fake_chat_model_with_usage,
+    )
+
+    result = asyncio.run(run_synthesis(
+        stats_snapshot={"aggression_factor": {"ratio": 10.0, "n": 10, "d": 1}},
+        session_dynamics={}, leak_tags=[aggression_leak],
+        db=db, game_id=str(game.id), user=user,
+    ))
+
+    pinned_context = json.loads(captured_messages["messages"][-1]["content"])
+    evidence = pinned_context["leak_tags"][0]["evidence"]
+    assert evidence["formula"] == "postflop bets+raises / postflop calls"
+    assert evidence["bets_raises"] == 10
+    assert evidence["calls"] == 1
+
+    report = result["report"]
+    assert "1 aggressive action over 10 passive actions" not in report["summary"]
+    narrative = report["sections"][0]["narrative"]
+    assert narrative.startswith(
+        "Postflop aggression factor is 10.0, calculated from 10 bets/raises and 1 call; "
+        "checks and folds are excluded from AF."
+    )
+    assert "Slow down in marginal spots." in narrative
+
+
+def test_normalize_report_evidence_repairs_saved_aggression_report():
+    saved = {
+        "summary": "AF is 10.0 from 1 aggressive action over 10 passive actions. Other note.",
+        "sections": [{
+            "tag": "too_aggressive_postflop",
+            "kind": "stat",
+            "severity": 3,
+            "evidence": {"ratio": 10.0, "n": 10, "d": 1},
+            "narrative": (
+                "The aggression factor is 10.0 based on 1 aggressive action over "
+                "10 passive actions. Keep marginal lines controlled."
+            ),
+        }],
+        "report_kind": "current_game_observation",
+    }
+
+    normalized = normalize_report_evidence(saved)
+
+    assert normalized["summary"] == "Other note."
+    assert normalized["report_kind"] == "current_game_observation"
+    assert normalized["sections"][0]["narrative"] == (
+        "Postflop aggression factor is 10.0, calculated from 10 bets/raises and 1 call; "
+        "checks and folds are excluded from AF. "
+        "Keep marginal lines controlled."
+    )
+    assert saved["sections"][0]["narrative"].startswith("The aggression factor")

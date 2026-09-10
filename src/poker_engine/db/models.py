@@ -51,6 +51,9 @@ class BotStyle(str, enum.Enum):
     LAG = "lag"
     STATION = "station"
     ROCK = "rock"
+    AI_GTO = "AI GTO"
+    AI_FISH = "AI Fish"
+    AI_STATION = "AI Station"
 
 
 class AccountStatus(str, enum.Enum):
@@ -165,6 +168,13 @@ class Game(Base):
     ante: Mapped[int] = mapped_column(Integer, default=0)
     buy_in: Mapped[int] = mapped_column(Integer)
     max_round: Mapped[int] = mapped_column(Integer)
+    game_format: Mapped[str] = mapped_column(String(20), default="cash", server_default="cash")
+    scenario: Mapped[str] = mapped_column(String(40), default="custom", server_default="custom")
+    ante_type: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
+    tournament_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    profile_scope: Mapped[str] = mapped_column(
+        String(40), default="cash_6max_100bb", server_default="cash_6max_100bb", index=True
+    )
     hero_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
@@ -233,6 +243,9 @@ class Hand(Base):
     button_pos: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sb_pos: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bb_pos: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Number of non-busted players who were dealt into this hand. This can
+    # change during one game and is therefore a hand fact, not a game setting.
+    active_player_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     street_reached: Mapped[Street] = mapped_column(Enum(Street))
     board: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     pot_total: Mapped[int] = mapped_column(Integer, default=0)
@@ -258,7 +271,7 @@ class HandPlayer(Base):
     """A player's participation in one hand.
 
     ``hole_cards`` is NULL unless the cards are known to the hero: always set
-    for the hero, set for opponents only when revealed at showdown.
+    for the hero, set for opponents only when actually revealed at showdown.
     """
 
     __tablename__ = "hand_players"
@@ -436,9 +449,53 @@ class GameEvaluationBatch(Base):
     evaluation: Mapped["GameEvaluation"] = relationship(back_populates="batches")
 
 
+class HistoryEvaluation(Base):
+    """A deterministic, scope-isolated rolling statistics evaluation.
+
+    Unlike ``GameEvaluation`` this row is a snapshot, is not tied to one game,
+    and is never folded as another occurrence into ``PlayerProfile``.
+    """
+
+    __tablename__ = "history_evaluations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), index=True
+    )
+    scope_key: Mapped[str] = mapped_column(String(40), index=True)
+    window_hands: Mapped[int] = mapped_column(Integer, default=500, server_default="500")
+    latest_game_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("games.id", ondelete="SET NULL"), nullable=True
+    )
+    cutoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    games_included: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    status: Mapped[EvaluationStatus] = mapped_column(
+        Enum(EvaluationStatus), default=EvaluationStatus.PENDING,
+        server_default=EvaluationStatus.PENDING.value,
+    )
+    stats_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    sample_status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    trend_comparison: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    deterministic_stat_leaks: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    model_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    threshold_profile: Mapped[str] = mapped_column(String(40))
+    threshold_version: Mapped[str] = mapped_column(String(40))
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped["User"] = relationship()
+    latest_game: Mapped["Game | None"] = relationship()
+
+
 class PlayerProfile(Base):
-    """The long-term coaching profile: one row per user, a deterministic fold
-    over their evaluation history (see ai_functions.memory.fold). Never
+    """A scoped long-term coaching profile: one row per user and profile
+    scope, as a deterministic fold over the matching evaluation history. Never
     hand-edited — every field here is either derived by rebuild_profile() or,
     for playstyle_summary, regenerated wholesale after every fold/rebuild.
     """
@@ -447,6 +504,9 @@ class PlayerProfile(Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True
+    )
+    scope_key: Mapped[str] = mapped_column(
+        String(40), primary_key=True, default="cash_6max_100bb", server_default="cash_6max_100bb"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -459,5 +519,28 @@ class PlayerProfile(Base):
     # before this timestamp. Reset never mutates evaluation rows.
     reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    user: Mapped["User"] = relationship()
+
+
+class DrillSession(Base):
+    """A persisted ten-question boundary drill owned by one user."""
+
+    __tablename__ = "drill_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    pack_id: Mapped[str] = mapped_column(String(64), index=True)
+    pack_version: Mapped[str] = mapped_column(String(20))
+    questions: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    answers: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    next_index: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    correct_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship()

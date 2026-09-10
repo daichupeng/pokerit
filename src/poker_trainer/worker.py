@@ -14,6 +14,10 @@ from poker_engine.db.base import SessionLocal
 from shared_services.logging_config import configure_logging
 
 from ai_functions.game_review.pipeline import find_stuck_evaluations, run_evaluation
+from ai_functions.history_evaluation.pipeline import (
+    find_stuck_history_evaluations,
+    run_history_evaluation,
+)
 
 _log = logging.getLogger("prompts")
 
@@ -30,6 +34,7 @@ async def startup(ctx) -> None:
     db = SessionLocal()
     try:
         stuck_ids = find_stuck_evaluations(db)
+        stuck_history_ids = find_stuck_history_evaluations(db)
     finally:
         db.close()
 
@@ -37,6 +42,8 @@ async def startup(ctx) -> None:
     for evaluation_id in stuck_ids:
         _log.info("game_review.worker.resuming_evaluation", extra={"evaluation_id": evaluation_id})
         await pool.enqueue_job("run_evaluation", evaluation_id)
+    for evaluation_id in stuck_history_ids:
+        await pool.enqueue_job("run_history_evaluation", evaluation_id)
 
 
 async def shutdown(ctx) -> None:
@@ -44,7 +51,7 @@ async def shutdown(ctx) -> None:
 
 
 class WorkerSettings:
-    functions = [run_evaluation]
+    functions = [run_evaluation, run_history_evaluation]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(REDIS_URL)

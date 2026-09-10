@@ -52,3 +52,17 @@ def test_stat_missing_from_snapshot_is_skipped():
 
 def test_empty_snapshots_yields_empty_trends():
     assert compute_trends([]) == {}
+
+
+def test_aggression_factor_distinguishes_infinite_from_undefined():
+    trends = compute_trends([
+        {"aggression_factor": {"ratio": 2.0, "infinite": False, "n": 4, "d": 2}},
+        {"aggression_factor": {"ratio": None, "infinite": True, "n": 5, "d": 0}},
+        {"aggression_factor": {"ratio": None, "infinite": False, "n": 0, "d": 0}},
+    ])
+
+    assert trends["aggression_factor"]["series"] == [
+        {"value": 2.0, "n": 4, "d": 2},
+        {"value": None, "n": 5, "d": 0, "infinite": True},
+    ]
+    assert trends["aggression_factor"]["direction"] == "up"

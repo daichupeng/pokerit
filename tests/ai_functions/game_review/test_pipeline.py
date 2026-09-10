@@ -51,7 +51,11 @@ def _make_user(db, email="hero@test.local"):
 
 
 def _make_game(db, user):
-    game = Game(small_blind=50, big_blind=100, buy_in=10000, max_round=50, hero_user_id=user.id)
+    game = Game(
+        small_blind=50, big_blind=100, buy_in=10000, max_round=50,
+        hero_user_id=user.id, game_format="cash", scenario="cash_6max_100bb",
+        profile_scope="cash_6max_100bb",
+    )
     db.add(game)
     db.flush()
     hero_gp = GamePlayer(
@@ -159,11 +163,22 @@ def test_run_evaluation_completes_end_to_end(db_session, monkeypatch):
     assert evaluation.status == EvaluationStatus.COMPLETED
     assert evaluation.progress_current == evaluation.progress_total
     assert evaluation.leak_tags is not None
-    assert evaluation.report == {"summary": "Solid small sample.", "sections": []}
+    assert evaluation.report == {
+        "summary": "Solid small sample.",
+        "sections": [],
+        "report_kind": "current_game_observation",
+        "threshold_profile": {
+            "key": "cash_6max_100bb",
+            "version": "2026-07-23.v3",
+        },
+    }
     assert evaluation.stats_snapshot["game_level"]["hands_dealt"] == 2
+    assert evaluation.stats_snapshot["sample_status"]["metrics"]
+    assert evaluation.model_versions["stat_threshold_profile"] == "cash_6max_100bb"
+    assert evaluation.model_versions["stat_threshold_version"] == "2026-07-23.v3"
     assert evaluation.folded_at is not None
 
-    profile = db.get(PlayerProfile, user.id)
+    profile = db.get(PlayerProfile, (user.id, "cash_6max_100bb"))
     assert profile is not None
     assert profile.evaluations_folded == 1
 
@@ -312,7 +327,7 @@ def test_second_evaluation_reports_returning_leak_and_profile_confirms(db_sessio
     assert eval_a.status == EvaluationStatus.COMPLETED
     assert eval_a.report["sections"][0]["profile_status"] == "new"  # first-ever eval: no profile yet
 
-    profile = db.get(PlayerProfile, user.id)
+    profile = db.get(PlayerProfile, (user.id, "cash_6max_100bb"))
     assert profile.evaluations_folded == 1
     missed_fold_record = next(r for r in profile.leaks if r["tag"] == "missed_fold")
     assert missed_fold_record["status"] == "flagged"

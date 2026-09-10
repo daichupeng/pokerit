@@ -2,9 +2,8 @@
 
 Per the feature's architecture decisions: this is ONE agent implementation
 configured per street (not four near-duplicate modules), it has NO tools, it
-receives hands PUSHED to it in fixed-size batches, and it judges only
-decisions on its own street even though each hand is provided in full (all
-streets) for context. Findings never carry model-invented severities or
+receives point-in-time Decision Snapshots in fixed-size batches, and it judges
+only decisions on its own street. Findings never carry model-invented severities or
 numbers — those come from ``leak_taxonomy``/``merge`` in code.
 """
 
@@ -14,11 +13,16 @@ import json
 import logging
 
 from poker_engine.db.models import Game, Hand
+from ai_functions.coach_engine.engine import build_scenario_context
+from ai_functions.decision_snapshot import build_decision_snapshots
 from shared_services.llm import chat_model_with_usage
 
 from ai_functions.game_review import config
-from ai_functions.game_review.hand_context import build_hand_text
-from ai_functions.game_review.leak_taxonomy import JUDGMENT_TAGS
+from ai_functions.game_review.leak_taxonomy import (
+    ALL_JUDGMENT_TAGS,
+    judgment_tags_for_profile,
+    threshold_profile_key_for_game,
+)
 
 _prompt_log = logging.getLogger("prompts")
 
@@ -29,9 +33,8 @@ MAX_REPLY_TOKENS = 4096
 _SYSTEM_PROMPT_TEMPLATE = """\
 You are a poker hand-review agent reviewing only the {street} street.
 
-You will be given several complete hands (all streets, for context) from a
-single game. For each hand, judge ONLY the hero's decision(s) made on the
-{street} street. Do not judge decisions the hero made on other streets.
+You will be given point-in-time Decision Snapshots from a single game. For each
+snapshot, judge ONLY the hero's decision on the {street} street.
 
 Rules you MUST follow:
 - Evaluate each {street} decision using only information that was available
@@ -43,14 +46,37 @@ Rules you MUST follow:
 - Only use tags from this exact vocabulary: {tags}. Never invent a tag.
 - Cite the exact `round_count` printed at the top of the hand block for every
   finding.
-- Do not compute or state any statistic, percentage, or count in your notes —
-  a one or two sentence qualitative note only.
+- Do not compute or state game-level statistics, percentages, or frequencies.
+  Exact actions and sizes already printed in the hand history may be quoted.
+- For every finding, identify the hero's actual action, the strategic problem,
+  a better realistic line, and why that line has higher expected value. Do not
+  use the eventual result as the reason.
 - If nothing on the {street} street across these hands qualifies for a
   finding, return an empty list.
+- Treat configured bot styles (for example TAG or AI GTO) only as simulation
+  metadata. They are not observed population reads and AI GTO is not proof a
+  matching solver node was used.
+- Name the evidence category behind the conclusion. Exact solver frequencies
+  or EV are forbidden unless a `solver_node` evidence source is present.
 
 Respond with ONLY a JSON array (no prose, no code fences) where each element
 is exactly:
-{{"tag": "<one of {tags}>", "round_count": <int>, "note": "<one or two sentences>"}}
+{{"tag": "<one of {tags}>", "round_count": <int>,
+  "hero_action": "<the action being reviewed>",
+  "issue": "<what is strategically wrong>",
+  "better_line": "<a better action or size>",
+  "why": "<why the alternative gains EV>",
+  "future_plan": "<optional next-street plan>",
+  "confidence": "high|medium|low"}}
+"""
+
+_PUSH_FOLD_FOCUS = """\
+This is a short-stack Push/Fold profile. On preflop, prioritize only:
+- open-shove selection,
+- reshove selection after an open,
+- call-off selection facing a shove.
+Use the dedicated shove/reshove/call-off tags. Do not substitute postflop
+aggression or C-bet concepts for these preflop decisions.
 """
 
 
@@ -58,12 +84,18 @@ def _batches(items: list, size: int) -> list[list]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def _build_batch_message(street: str, batch: list[Hand], game: Game, hero_gp_id) -> str:
-    blocks = []
+def _build_batch_message(street: str, batch: list[Hand], game: Game, hero_gp_id) -> tuple[str, dict[int, list[dict]]]:
+    snapshots = []
+    evidence_by_round: dict[int, list[dict]] = {}
     for hand in batch:
-        text = build_hand_text(game, hand, hero_gp_id)
-        blocks.append(f"round_count={hand.round_count}\n{text}")
-    return "\n\n---\n\n".join(blocks)
+        hand_snapshots = build_decision_snapshots(game, hand, hero_gp_id, street)
+        snapshots.extend(hand_snapshots)
+        evidence_by_round[hand.round_count] = [
+            source
+            for snapshot in hand_snapshots
+            for source in snapshot.get("evidence_sources", [])
+        ]
+    return json.dumps(snapshots, ensure_ascii=False, indent=2), evidence_by_round
 
 
 def _strip_fences(text: str) -> str:
@@ -78,7 +110,13 @@ def _strip_fences(text: str) -> str:
     return stripped.strip()
 
 
-def parse_findings(raw_text: str, batch: list[Hand], street: str) -> list[dict]:
+def parse_findings(
+    raw_text: str,
+    batch: list[Hand],
+    street: str,
+    allowed_tags: frozenset[str] = ALL_JUDGMENT_TAGS,
+    require_explanation: bool = False,
+) -> list[dict]:
     """Validate raw model output against the batch and the taxonomy.
 
     Drops (and logs) any finding whose tag isn't in ``JUDGMENT_TAGS`` or whose
@@ -111,7 +149,7 @@ def parse_findings(raw_text: str, batch: list[Hand], street: str) -> list[dict]:
         round_count = item.get("round_count")
         note = item.get("note", "")
 
-        if tag not in JUDGMENT_TAGS:
+        if tag not in allowed_tags:
             _prompt_log.warning(
                 "game_review.street_agent.unknown_tag",
                 extra={"street": street, "tag": tag, "round_count": round_count},
@@ -125,13 +163,30 @@ def parse_findings(raw_text: str, batch: list[Hand], street: str) -> list[dict]:
             )
             continue
 
-        findings.append({
+        required = ("hero_action", "issue", "better_line", "why")
+        if require_explanation and any(
+            not isinstance(item.get(key), str) or not item[key].strip()
+            for key in required
+        ):
+            raise ValueError(
+                f"Incomplete {street} finding for round_count={round_count}; "
+                "hero_action, issue, better_line, and why are required"
+            )
+
+        finding = {
             "tag": tag,
             "hand_id": str(hand.id),
             "round_count": round_count,
             "street": street,
             "note": note,
-        })
+        }
+        # Preserve the structured decision explanation for synthesis. Keeping
+        # legacy ``note`` support makes resumed pre-upgrade batches readable.
+        for key in ("hero_action", "issue", "better_line", "why", "future_plan", "confidence"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                finding[key] = value.strip()
+        findings.append(finding)
 
     return findings
 
@@ -149,21 +204,35 @@ async def run_batch(
     pipeline (Stage 4) calls this directly per ``game_evaluation_batches``
     row so a crash mid-run never has to recompute a completed batch.
     """
-    tags_str = ", ".join(sorted(JUDGMENT_TAGS))
+    profile_key = threshold_profile_key_for_game(game)
+    allowed_tags = judgment_tags_for_profile(profile_key, street)
+    tags_str = ", ".join(sorted(allowed_tags))
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(street=street, tags=tags_str)
-    user_content = _build_batch_message(street, batch, game, hero_gp_id)
+    if profile_key == "mtt_8max_15bb" and street == "preflop":
+        system_prompt += "\n" + _PUSH_FOLD_FOCUS
+    user_content, evidence_by_round = _build_batch_message(street, batch, game, hero_gp_id)
     messages = [
         {"role": "system", "content": system_prompt},
+        {"role": "system", "content": build_scenario_context(game)},
         {"role": "user", "content": user_content},
     ]
     result = await chat_model_with_usage(
         messages=messages,
         model=model,
         max_tokens=MAX_REPLY_TOKENS,
-        temperature=1,  # gpt-5-mini only supports the default temperature
+        temperature=1,  # Ignored by the wrapper for reasoning models.
         log_context={"game_id": str(game.id), "street": street},
     )
-    return parse_findings(result.text, batch, street)
+    findings = parse_findings(
+        result.text, batch, street, allowed_tags, require_explanation=True,
+    )
+    for finding in findings:
+        # Evidence labels come from code-built snapshots, never model text.
+        deduped = {}
+        for source in evidence_by_round.get(finding["round_count"], []):
+            deduped[(source.get("type"), source.get("pack_id"))] = source
+        finding["evidence_sources"] = list(deduped.values())
+    return findings
 
 
 async def run_street_agent(

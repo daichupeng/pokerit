@@ -9,20 +9,38 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from poker_engine import stats
-from poker_engine.db.models import AccountStatus, User
+from poker_engine.db.models import AccountStatus, PlayerProfile, User
+from poker_engine.scenarios import (
+    ACTIVE_PROFILE_SCOPE_LABELS,
+    DEFAULT_PROFILE_SCOPE,
+    LEGACY_PROFILE_SCOPE_LABELS,
+    PROFILE_SCOPE_LABELS,
+    profile_scope_label,
+)
 from poker_trainer.api.auth import serialize_user
 from poker_trainer.auth.deps import get_db, require_user
+from poker_trainer.preferences import merge_preferences
 
 from ai_functions.memory.persistence import build_profile_context, load_profile_row, rebuild_and_persist
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,40}$")
+
+
+def _validate_profile_scope(scope: str | None) -> str | None:
+    if scope is not None and scope not in PROFILE_SCOPE_LABELS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown training profile scope: {scope}",
+        )
+    return scope
 
 
 class ProfileUpdate(BaseModel):
@@ -68,6 +86,12 @@ def update_profile(
     if "country" in data and data["country"]:
         data["country"] = data["country"].upper()
 
+    if "preferences" in data and data["preferences"] is not None:
+        try:
+            data["preferences"] = merge_preferences(user.preferences, data["preferences"])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     editable = {
         "display_name", "username", "bio", "avatar_url",
         "country", "timezone", "language", "preferences",
@@ -84,12 +108,14 @@ def update_profile(
 
 @router.get("/stats")
 def profile_stats(
+    scope: str | None = Query(default=None),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Hero's stats rolled up across every game they've played."""
-    counts = stats.compute_player_stats(db, user.id)
-    return stats.to_display(counts)
+    """Hero stats, optionally limited to one training profile scope."""
+    _validate_profile_scope(scope)
+    counts = stats.compute_player_stats(db, user.id, profile_scope=scope)
+    return {"scope": scope, "stats": stats.to_display(counts)} if scope else stats.to_display(counts)
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
@@ -111,22 +137,49 @@ def delete_account(
 
 @router.get("/coaching")
 def get_coaching_profile(
+    scope: str = Query(default=DEFAULT_PROFILE_SCOPE),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """The long-term coaching profile: leak states grouped by status, stat
     trends, playstyle summary, and how many evaluations are folded in.
     """
-    row = load_profile_row(db, user.id)
+    _validate_profile_scope(scope)
+    row = load_profile_row(db, user.id, scope)
+    existing_legacy_scopes = set(
+        db.execute(
+            select(PlayerProfile.scope_key).where(
+            PlayerProfile.user_id == user.id,
+            PlayerProfile.scope_key.in_(LEGACY_PROFILE_SCOPE_LABELS),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    visible_labels = {
+        **ACTIVE_PROFILE_SCOPE_LABELS,
+        **{
+            key: label
+            for key, label in LEGACY_PROFILE_SCOPE_LABELS.items()
+            if key in existing_legacy_scopes
+        },
+    }
+    scope_options = [
+        {"key": key, "label": label}
+        for key, label in visible_labels.items()
+    ]
     if row is None:
         return {
+            "scope": scope,
+            "scope_label": profile_scope_label(scope),
+            "available_scopes": scope_options,
             "evaluations_folded": 0,
             "leaks_by_status": {"flagged": [], "confirmed": [], "resolved": []},
             "trends": {},
             "playstyle_summary": "",
         }
 
-    context = build_profile_context(db, user.id) or {"trends": {}}
+    context = build_profile_context(db, user.id, scope) or {"trends": {}}
     leaks_by_status = {"flagged": [], "confirmed": [], "resolved": []}
     for leak in row.leaks:
         bucket = leaks_by_status.get(leak.get("status"))
@@ -134,6 +187,9 @@ def get_coaching_profile(
             bucket.append(leak)
 
     return {
+        "scope": scope,
+        "scope_label": profile_scope_label(scope),
+        "available_scopes": scope_options,
         "evaluations_folded": row.evaluations_folded,
         "leaks_by_status": leaks_by_status,
         "trends": context.get("trends", {}),
@@ -143,6 +199,7 @@ def get_coaching_profile(
 
 @router.post("/reset")
 async def reset_coaching_profile(
+    scope: str = Query(default=DEFAULT_PROFILE_SCOPE),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -151,6 +208,13 @@ async def reset_coaching_profile(
     touches any game_evaluations row — this IS the reset mechanism (decision
     1), not a mutation of history.
     """
+    _validate_profile_scope(scope)
     reset_at = datetime.now(timezone.utc)
-    row = await rebuild_and_persist(db, user.id, reset_at=reset_at)
-    return {"reset_at": row.reset_at.isoformat(), "evaluations_folded": row.evaluations_folded}
+    row = await rebuild_and_persist(
+        db, user.id, reset_at=reset_at, scope_key=scope
+    )
+    return {
+        "scope": scope,
+        "reset_at": row.reset_at.isoformat(),
+        "evaluations_folded": row.evaluations_folded,
+    }

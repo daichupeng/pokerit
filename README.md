@@ -1,268 +1,335 @@
 # Poker Trainer
 
-A poker webapp backend that uses [PokerKit](https://github.com/uoftcprg/pokerkit)
-to drive the game engine and hand evaluation, a game-management + recording layer
-in `poker_engine/`, and an **LLM-driven AI coach** plus **LLM-powered opponent
-bots** in `ai_functions/`.
+Current release: **v0.2.0** — 2026-07-29
 
-## Stack
+A local-first No-Limit Hold'em training application built with
+[PokerKit](https://github.com/uoftcprg/pokerkit), FastAPI, PostgreSQL, and LLM-
+assisted coaching. It combines playable cash/MTT practice tables, persistent
+hand histories, deterministic statistics, structured game reviews, rolling
+history reports, and focused preflop drills.
 
-- **Python 3.11**, managed with [uv](https://github.com/astral-sh/uv)
-- **FastAPI** + uvicorn for the web backend
-- **PokerKit** (v0.7.4+) — production-quality NL Hold'em engine with correct
-  wheel (A-2-3-4-5) handling, transparent side-pot objects, and 99% test
-  coverage validated against real WSOP hand histories
-- **Postgres 16** + **SQLAlchemy 2.0** for game records and coach conversations
-- **LLM backends** via the OpenAI SDK — OpenAI (GPT), MiniMax, and a local
-  [Ollama](https://ollama.com/) server are all reachable through one client
-  wrapper. Powers both the AI coach and the LLM opponent bots.
+This release contains substantial training and analysis improvements on top of
+[`daichupeng/pokerit`](https://github.com/daichupeng/pokerit). See
+[CHANGELOG.md](CHANGELOG.md) for the user-facing change history and
+[docs/UPSTREAM_CHANGES.md](docs/UPSTREAM_CHANGES.md) for a reviewer-oriented
+map of the changes relative to upstream.
 
-## The `poker_engine` package
+## Highlights
 
-- `config.py` — `GameConfig`/`SeatSpec`: blinds, buy-in, and the seat lineup.
-- `pk_adapter.py` — thin adapter over PokerKit: card utilities, hand evaluation
-  (`best_five`, `winners_from_cards`), Monte Carlo equity estimation, and pot
-  serialization helpers.
-- `bots/` — two families of bots behind one `declare_action` / `set_n_players`
-  interface, so the engine treats them identically:
-  - `styles.py` — `StyleBot` plus TAG / LAG / Calling-station / Rock archetypes.
-    These estimate equity via a Monte Carlo simulation using PokerKit's hand
-    evaluator (fast, deterministic, no network).
-  - `llm_bot_base.py` / `llm_styles.py` — `LLMBot`, a drop-in replacement that
-    asks an LLM for its action. Concrete archetypes **AI GTO** (`GTOBot`),
-    **AI Fish** (`FishBot`), and **AI Station** (`CallerBot`) each carry a
-    tailored system prompt, model, and temperature, and are exposed by name via
-    `LLM_STYLE_REGISTRY`. The bot's decision prompt is a compact text snapshot of
-    the table (see `shared_services/table_formatter.py`) and it must reply with a
-    strict JSON action object that is parsed and clamped to the legal bet range.
-- `players/console.py` — `ConsolePlayer`, a human seat driven from stdin.
-- `db/` — SQLAlchemy models: `users`, `oauth_identities`, `games`,
-  `game_players`, `hands`, `hand_players`, `actions`, plus `conversations` and
-  `messages` for the AI coach, and `game_evaluations` + `coaching_profiles` for
-  the game-review pipeline. Bots are transient (rows in `game_players` only);
-  only humans get a `users` account.
-- `recorder.py` — `PerspectiveRecorder`: records each game **from the hero's
-  view**. Opponent hole cards are stored only when revealed at showdown; folded
-  or unknown hands are stored as `NULL`. Side pots are stored verbatim.
-- `engine.py` — `GameEngine`: builds the table, runs the hand loop, records it.
-- `stats.py` — deterministic, hero-only poker stats: VPIP, PFR, 3-bet frequency,
-  C-bet frequency, fold-to-aggression, and more. Pure functions over recorded
-  `Hand`/`HandPlayer`/`Action` rows; no judgment calls, safe for live or finished
-  games. Entry points: `compute_game_stats(db, game_id, game_player_id)` and
-  `compute_player_stats(db, user_id)` roll up counts across games and normalize
-  to percentages via `to_display()`.
+- Play 6-max or 8-max 100BB cash, three 8-max MTT stack-depth presets with a
+  big-blind ante, or a custom fixed-level game.
+- Practice against deterministic archetype bots or LLM-powered opponents.
+- Ask a concise, scenario-aware AI coach during play or from a saved hand.
+- Save every completed hand incrementally instead of waiting for a game to end.
+- Run a structured single-game review using future-clipped Decision Snapshots.
+- Track scope-isolated coaching profiles and rolling statistics over up to 500
+  saved hands.
+- Train source-audited RFI boundaries in persisted ten-question drill sessions.
+- Keep hidden opponent cards out of the browser and database unless they were
+  actually revealed at showdown.
 
-## AI coach (`ai_functions/`)
+## Training modes
 
-An LLM coaching layer that reviews hands and advises during live play, plus an
-async multi-stage pipeline for game-level leak detection and synthesis.
+### Playable scenarios
 
-### In-game coaching (`coach_engine/`)
+| Scenario key | Table | Starting stack | Ante |
+| --- | ---: | ---: | --- |
+| `cash_6max_100bb` | 6-max | 100BB | None |
+| `cash_8max_100bb` | 8-max | 100BB | None |
+| `mtt_8max_40bb` | 8-max | 40BB | 1BB big-blind ante |
+| `mtt_8max_25bb` | 8-max | 25BB | 1BB big-blind ante |
+| `mtt_8max_15bb` | 8-max | 15BB default | 1BB big-blind ante |
+| `custom` | Configurable | Configurable | None or BB ante |
 
-- `engine.py` — the single entry point for a coaching turn. It builds the
-  prompt (system prefix + optional pinned context + a live table snapshot + a
-  trimmed rolling window of recent turns), streams the reply from the LLM, and
-  persists both the user and assistant messages with token counts.
-  Three coaching personas are selected per turn:
-  - **hand_review** — blunt, range-based post-hand analysis of a saved hand.
-  - **in_game** — next-best-action advice against the current table state.
-  - **generic** — free-form Q&A with the GTO coach.
-- Conversations are keyed by `entry_point` (`hand_history` / `in_game` /
-  `generic`) and may pin an un-trimmable context block plus a per-turn live
-  context. The short-term memory window and a token budget bound the prompt size.
+MTT presets are fixed-level stack-depth training environments. They do **not**
+simulate blind increases, payouts, field size, bubble pressure, or ICM. When
+payout context is unavailable, the coach is instructed to reason in chip EV.
 
-### Game-level coaching (`game_review/`)
+### Preflop decision drills
 
-A fully asynchronous pipeline that reads finished games, triages hands into
-leak categories, and synthesizes structured feedback. Powered by tools (agents
-with schema-validated outputs) and a per-street analyzer.
+The drill screen uses four versioned RFI range packs:
 
-- `pipeline.py` — the orchestration harness. Stages execute serially or
-  in parallel; agents are spawned with strict input/output schemas.
-  1. **Triage** — categorize hands by leak type (positional, aggression, etc.).
-  2. **Stat leaks** — filter to hands that diverge from peer benchmarks.
-  3. **Street agents** — per-street analysis (preflop position, flop texture, etc.).
-  4. **Merge** — consolidate findings across streets.
-  5. **Synthesis** — LLM writer composes a guided improvement plan.
-- `leak_taxonomy.py` — 20+ leak types with scoring and confidence.
-  Hands are routed to appropriate review agents.
-- `street_agent.py` — street-specific decision analysis with hand strength
-  estimation, equity breakdowns, and action frequencies.
-- `synthesis.py` — generates a narrative improvement plan from triaged findings.
-- `session_dynamics.py` — table conditions, villain shapes, and stack dynamics.
-- `triage.py` — initial hand categorization and urgency scoring.
-- `hand_context.py` — context builders (hand strength, stack-to-pot ratios).
-- `config.py` — feature flags and LLM/schema configuration.
+- 6-max and 8-max cash at 100BB;
+- 6-max and 8-max MTT at 40BB with a 1BB BB ante.
 
-### Tools layer (`tools/`)
+Each persisted session keeps one pack and one RFI node constant for ten
+boundary/control decisions. Mixed chart cells accept every source-supported
+action without inventing exact frequencies. The current packs are transcribed
+from [RangeConverter's public charts](https://rangeconverter.com/free-poker-charts)
+and retain source URLs, hashes, position mappings, and derivation notes.
 
-Schema-validated tool executors and loop runners that power the game-review pipeline.
+## Coaching and evaluation
 
-- `executors.py` — `ToolExecutor` spawns an LLM agent with a strict JSON schema,
-  retries on parse failures, and returns the validated output. Logs every call.
-- `schemas.py` — Pydantic models for tool inputs/outputs (hand triage, leak
-  scoring, street analysis, narrative synthesis).
-- `loop.py` — retry loop for tools with `retry_count` and exponential backoff.
+### Interactive coach
 
-### Long-term coaching profile (`memory/`)
+The coach has separate prompts for completed-hand review, live next-action
+advice, and general poker questions. It receives authoritative scenario/table
+context, answers in the user's language, leads with the decision, and avoids
+generic filler. It must distinguish recorded state, deterministic math,
+configured bot style, versioned range knowledge, heuristic inference,
+user-supplied reads, and actual solver evidence.
 
-Persistent tracking of leak states, correction loops (discard/restore/dispute),
-and stat trends across all evaluated games.
+`AI GTO` is a configured simulation style; it is never presented as proof that
+a solver node was queried.
 
-- `persistence.py` — build/load/persist the coaching profile row. Fold
-  completed evaluations into a profile that tracks leak status (flagged /
-  confirmed / resolved), playstyle summary, and when it was reset.
+### Single-game evaluation
 
-## Shared services (`shared_services/`)
+`Evaluate Game` runs asynchronously through Redis/arq:
 
-- `llm.py` — one process-wide client wrapper over the OpenAI SDK that routes by
-  model name to OpenAI, MiniMax, or a local Ollama server, with both streaming
-  and non-streaming helpers, token-usage accounting, and reasoning-model
-  (`reasoning_effort`) handling. Every call is written to a JSONL prompt audit
-  log (`logs/prompts.jsonl`).
-- `table_formatter.py` — renders a `round_state` dict into the compact,
-  hero-relative text table that both the coach and the LLM bots consume.
-- `hand_formatter.py` — hand-history / position formatting helpers.
+1. Compute deterministic game statistics and session dynamics.
+2. Triage candidate hands by street.
+3. Build a versioned Decision Snapshot for each hero decision, clipped at the
+   moment of action so later actions, board cards, showdown cards, and results
+   cannot leak into the judgment.
+4. Ask street reviewers for structured explanations: actual action, issue,
+   better line, EV rationale, optional future plan, and confidence.
+5. Merge judgment findings with deterministic statistical findings.
+6. Synthesize a concise report while preserving code-owned tags, severities,
+   citations, sample status, and evidence categories.
 
-## Web app (`poker_trainer/`)
+Reports record the scenario threshold profile and threshold version used.
+Undefined `0/0` metrics remain undefined, and aggression factor is always
+defined as `(postflop bets + raises) / postflop calls`.
 
-An interactive poker table served by FastAPI with a vanilla-JS single-page UI.
-Bots run server-side via PokerKit's imperative state machine (one action at a
-time); the human plays over a WebSocket. The hidden-information rule is enforced
-end to end — the browser only ever receives the hero's own cards plus opponents'
-cards revealed at showdown.
+### Rolling history evaluation
 
-- `main.py` — FastAPI app: REST setup, WebSocket play, serves the SPA at `/`.
-- `api/auth.py` — Google OAuth login/callback/logout (see below);
-  `api/games.py` — create game, list games, get state;
-  `api/profile.py` — user profile CRUD, player stats rollup, coaching profile read/reset;
-  `api/coach.py` — the AI coach: create/fetch conversations and a
-  streaming (SSE) chat endpoint that injects the live table state as context;
-  `api/game_evaluation.py` — game-level coaching review pipeline (enqueue, poll, read).
-- `game/session.py` — `GameSession` wraps the PokerKit state machine and the bot
-  loop (LLM bots run in a worker thread so their async LLM calls don't block the
-  event loop); `game/manager.py` — in-memory live games.
-- `game/serialize.py` — builds the hero-perspective round-state payloads.
-- `ws.py` — the play loop (streams events, receives the hero's action).
-- `worker.py` — async job worker for background game evaluations via [arq](https://arq-docs.helpmanual.io/).
-- `jobs.py` — Redis pool and job-queue configuration.
-- `static/` — SPA: `index.html`, `css/styles.css`, `js/app.js` (router + login/
-  main/create screens), `js/table.js` (table render, bet controls, stats/hands
-  panel). Cards and felt are drawn in CSS — no downloaded assets, works offline.
+`Evaluate History` is separate from a single-game review. It:
 
-User journey: **Login** (skippable) → **Main** (create game / review evaluated games) →
-**Create game** (bots, blinds, buy-in; randomize + hide bot styles) → **Table**
-(standard play, slider + input bet controls clamped to the rules) with a
-collapsible **Stats / Hands** panel → **Game review** (async pipeline triages
-hands by leak type, synthesizes feedback, and coaches by street).
+- stays inside one scenario/profile scope;
+- aggregates the most recent 500 saved hands (or a smaller requested window);
+- compares the selected latest game with a prior-500-hand baseline that
+  excludes that game;
+- computes sample readiness, trends, and leak tags deterministically;
+- optionally asks one tool-free LLM call to narrate the already-computed JSON;
+- still completes with numeric output if narration fails; and
+- never folds itself into the per-game leak occurrence state machine.
 
-### Run the web app
+### Leak thresholds and sample handling
+
+Leak thresholds are centralized, scenario-specific, and versioned. The current
+development profile is `2026-07-23.v3` and uses a deliberately permissive
+minimum of five relevant opportunities for each deterministic metric. Below
+that floor the UI shows `insufficient sample` and code emits no statistical
+leak. Findings that clear five opportunities should still be interpreted as
+early signals, not settled long-term conclusions.
+
+The 15BB Push/Fold profile disables postflop statistical leak tags and instead
+prioritizes descriptive open-shove, reshove, and call-off statistics plus
+preflop shove/reshove/call-off judgment tags.
+
+### Long-term coaching profiles
+
+Completed single-game evaluations fold into a profile scoped by scenario. Leak
+states progress through `flagged`, `confirmed`, and `resolved`, with support for
+discard, restore, dispute, regression, and reset workflows. Cash, MTT, table
+size, and stack-depth profiles remain isolated; legacy 6-max MTT history is not
+silently reclassified as new 8-max data.
+
+## Quick start with Docker
+
+### Prerequisites
+
+- Docker Desktop
+- A Google OAuth web client
+- An OpenAI API key for the current default AI models
+
+### 1. Configure the environment
 
 ```bash
-cp .env.example .env                  # then fill in Google OAuth + LLM creds (see below)
-docker compose up -d --build          # starts Postgres, Redis, Ollama, app, and worker
-docker compose exec app uv run alembic upgrade head   # create/upgrade schema
-# open http://localhost:8000
+cp .env.example .env
 ```
 
-`docker compose` brings up:
+Edit `.env` and set at least:
 
-- **Postgres 16** for game records, coaching conversations, and user profiles.
-- **Redis** as the job queue broker for background game evaluations (arq).
-- **Ollama** with a one-shot fetch of `qwen3:4b` so the LLM bots and coach can
-  run against a local model without an external API.
-- **FastAPI app** on port 8000 serving the web UI and REST API.
-- **arq worker** in a separate container (`worker`) that processes game-evaluation
-  jobs from the queue.
+```dotenv
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+SESSION_SECRET=...
+OPENAI_API_KEY=...
+APP_BASE_URL=http://localhost:8000
+```
 
-Set `OPENAI_API_KEY` (and optionally `MINIMAX_API_KEY`) in `.env` to use hosted
-backends instead — the client in `shared_services/llm.py` routes by model name.
+Generate a session secret with, for example:
 
-## LLM configuration
+```bash
+openssl rand -hex 32
+```
 
-The AI coach and LLM bots reach three backends through one client wrapper,
-selected by model-name prefix:
+In Google Cloud Console, create an OAuth client of type **Web application** and
+register this exact authorized redirect URI:
 
-| Backend | Model name prefix | Credentials |
+```text
+http://localhost:8000/api/auth/google/callback
+```
+
+The origin in `APP_BASE_URL`, the browser URL, and the registered redirect URI
+must agree.
+
+### 2. Start the application
+
+```bash
+docker compose up -d --build
+docker compose exec app uv run alembic upgrade head
+```
+
+Open [http://localhost:8000](http://localhost:8000).
+
+Verify service state with:
+
+```bash
+docker compose ps
+```
+
+The default Compose stack starts PostgreSQL, Redis, Ollama, the FastAPI app,
+and the arq evaluation worker. The web app and worker watch mounted source files
+during local development.
+
+### Routine use on a Mac
+
+After sleep/wake, allow Docker Desktop a few seconds to resume and refresh the
+page. If the app is unavailable, run:
+
+```bash
+docker compose up -d
+```
+
+To stop the stack without deleting data:
+
+```bash
+docker compose down
+```
+
+Do **not** run `docker compose down -v` unless you intentionally want to delete
+the PostgreSQL and Ollama volumes.
+
+## Configuration
+
+### LLM backends
+
+The shared client routes requests by model-name prefix:
+
+| Backend | Model-name prefix | Configuration |
 | --- | --- | --- |
-| OpenAI | (default, e.g. `gpt-5-mini`, `gpt-4.1-mini`) | `OPENAI_API_KEY` |
-| MiniMax | `minimax…` | `MINIMAX_API_KEY` |
-| Ollama (local) | `qwen…` / `llama…` / `mistral…` / `ollama…` | none; `OLLAMA_BASE_URL` (default `http://localhost:11434`) |
+| OpenAI | Default, including `gpt-5...` | `OPENAI_API_KEY` |
+| MiniMax | `minimax...` | `MINIMAX_API_KEY` |
+| Ollama | `qwen...`, `llama...`, `mistral...`, `ollama...` | `OLLAMA_BASE_URL` |
 
-Every call is appended to a JSONL audit log at `${LOG_DIR}/prompts.jsonl`
-(prompt, response, model, latency, and token counts).
+Current code defaults are:
 
-## Accounts & authentication
+| Component | Default model |
+| --- | --- |
+| Interactive coach | `gpt-5.4-mini` |
+| Single-game street review and synthesis | `gpt-5.4-mini` |
+| Rolling-history narration | `gpt-5.4-mini` |
+| LLM opponent bots | `gpt-5.4-mini` |
 
-Sign-in is **Google OAuth2** (server-side flow via authlib), with signed
-httpOnly cookie sessions (Starlette `SessionMiddleware`). Login is required to
-create or play a game; the game record links to your account by email.
+These defaults currently live in the corresponding Python configuration
+modules; they are not selected by an environment variable. GPT-5 reasoning
+models are called without unsupported temperature parameters, and tool-bearing
+Chat Completions requests use `reasoning_effort="none"` for compatibility.
 
-- `auth/` — OAuth registry, session config, account-linking service, and the
-  `get_db` / `current_user` / `require_user` FastAPI dependencies.
-- `api/auth.py` — `GET /api/auth/google/login`, `…/callback`, `POST /api/auth/logout`,
-  `GET /api/auth/me`, `GET /api/auth/config`.
-- `api/profile.py` — `GET/PATCH/DELETE /api/profile` (display name, username,
-  bio, country, timezone, language, avatar, preferences; soft-delete).
-- `api/coach.py` — `POST /api/coach/conversations`, `GET /api/coach/conversations/{id}`,
-  `GET /api/coach/conversations/by-hand/{hand_id}`, and `POST /api/coach/chat`
-  (SSE stream). Requires a signed-in user.
+### Account preferences
 
-The `users` table now holds a full profile (username, avatar, bio, locale,
-status/role, timestamps); linked external identities live in `oauth_identities`.
+Account Settings stores versioned quick-bet shortcuts used by newly created
+games. Defaults are:
 
-### User profile endpoints
+- preflop: `2.0`, `2.5`, `6.0`, `7.5` BB;
+- postflop: `33`, `50`, `65`, `100` percent pot.
 
-- `GET /api/profile` — retrieve the current user's profile (display name, username,
-  bio, avatar, country, timezone, language, preferences, account status).
-- `PATCH /api/profile` — update editable profile fields with validation.
-- `DELETE /api/profile` — soft-delete account (keeps game history, frees email/username).
-- `GET /api/profile/stats` — player's stats rolled up across all games (VPIP, PFR,
-  3-bet frequency, C-bet frequency, etc.).
-- `GET /api/profile/coaching` — long-term coaching profile: leak states grouped by
-  status (flagged / confirmed / resolved), stat trends, and playstyle summary.
-- `POST /api/profile/reset` — reset the coaching profile to fold all evaluations
-  before a certain timestamp, producing an empty profile until new evaluations complete.
+Legacy per-game API overrides remain accepted.
 
-### Google Cloud setup
+## Data persistence and privacy
 
-1. Google Cloud Console → APIs & Services → **Credentials** → Create **OAuth
-   client ID** → *Web application*.
-2. Add an **Authorized redirect URI**: `${APP_BASE_URL}/api/auth/google/callback`
-   (e.g. `http://localhost:8000/api/auth/google/callback`).
-3. Put the client id/secret and a random `SESSION_SECRET` in `.env` (see
-   `.env.example`). `.env` is gitignored — never commit it.
+- Source code lives in the repository directory.
+- PostgreSQL data lives in the Docker volume `pgdata`.
+- Games are created in the database at session start, and every completed hand
+  is flushed incrementally. A service interruption can lose the hand currently
+  in progress, but already completed hands remain stored.
+- Normal restarts, Mac sleep/wake, and `docker compose down` do not remove the
+  database volume.
+- The browser receives only the hero's cards and opponent cards actually
+  revealed at showdown.
+- Fold winners are not classified as showdowns, and hidden opponent cards are
+  removed during the visibility-correction migrations.
 
-### Schema migrations (Alembic)
+Every model call is written to `${LOG_DIR}/prompts.jsonl`, including prompts,
+responses, model names, latency, token counts, and contextual identifiers.
+Treat this file as sensitive: do not publish it without sanitization.
 
-```bash
-docker compose exec app uv run alembic upgrade head     # apply migrations
-docker compose exec app uv run alembic revision -m "msg" --autogenerate  # new migration
-```
+Never commit `.env`, API keys, OAuth client secrets, session secrets, database
+dumps, or unsanitized prompt logs.
 
-`scripts/init_db.py` (`create_all`) still works for a fresh throwaway DB, but
-Alembic is the canonical path and preserves existing data.
+## Database migrations
 
-## CLI game + Docker (engine layer)
+Alembic is the canonical schema-management path:
 
 ```bash
-docker compose up -d db                                   # start Postgres
-docker compose exec app uv run python scripts/init_db.py  # create schema
-docker compose run --rm app uv run python scripts/play_game.py --auto   # bot-only, recorded
-docker compose exec db psql -U poker -d poker             # inspect records
+docker compose exec app uv run alembic upgrade head
+docker compose exec app uv run alembic current
 ```
 
-Interactive console play (human vs bots):
+Migrations `0009` through `0016` add scenario/profile scoping, rolling-history
+evaluations, showdown visibility corrections, per-hand active-player counts,
+and persisted drill sessions. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+
+`scripts/init_db.py` remains useful for a fresh throwaway database, but it is
+not a replacement for Alembic when upgrading existing data.
+
+## Architecture
+
+| Area | Responsibility |
+| --- | --- |
+| `src/poker_engine/` | PokerKit game loop, bots, recording, persistence, and deterministic stats |
+| `src/ai_functions/coach_engine/` | Interactive coaching prompts and conversation memory |
+| `src/ai_functions/game_review/` | Single-game triage, street review, merge, and synthesis |
+| `src/ai_functions/history_evaluation/` | Rolling deterministic history reports and optional narration |
+| `src/ai_functions/preflop_ranges/` | Versioned RFI range packs and source metadata |
+| `src/poker_trainer/` | FastAPI routes, WebSocket sessions, arq worker, and SPA |
+| `src/shared_services/` | LLM routing, logging, and hand/table formatting |
+| `migrations/versions/` | Alembic schema and data migrations |
+| `tests/` | Engine, API, statistics, evaluation, range, drill, and regression tests |
+
+The live game manager is in memory, while completed hand history and reports are
+persisted in PostgreSQL. Redis is used only as the background job broker.
+
+## Testing
+
+Run the complete test suite in an isolated app container:
 
 ```bash
-docker compose run --rm app uv run python scripts/play_game.py
+docker compose run --rm --no-deps \
+  -v "$PWD/tests:/app/tests:ro" \
+  app uv run --extra dev pytest -q
 ```
 
-## Local development (without Docker)
+For local development without Docker:
 
 ```bash
-uv sync                                  # create .venv and install dependencies
-export DATABASE_URL=postgresql+psycopg://poker:poker@localhost:5432/poker
-uv run python scripts/init_db.py
-uv run python scripts/play_game.py       # play vs bots
+uv sync --extra dev
+uv run pytest -q
 ```
+
+## Known limitations
+
+- Tournament presets are fixed stack-depth chip-EV drills, not a full
+  tournament lifecycle or an ICM engine.
+- The versioned range knowledge base currently covers RFI only. It fails closed
+  outside matching format, table-size, stack, ante, position, and node data.
+- Derived position mappings do not model card bunching.
+- LLM outputs remain probabilistic; deterministic stats, tags, citations,
+  thresholds, and evidence labels are kept in code to limit that risk.
+- The current five-opportunity leak floor is intentionally permissive and should
+  be calibrated further before treating findings as population-grade evidence.
+- An in-progress live hand is not recoverable after an app restart or broken
+  WebSocket connection.
+
+## Versioning and upstream contribution
+
+The Python package and Git tag use version `0.2.0`, released on 2026-07-29.
+Release notes follow [Keep a Changelog](https://keepachangelog.com/) categories
+and versions follow semantic versioning.
+
+For an upstream pull request, start with
+[docs/UPSTREAM_CHANGES.md](docs/UPSTREAM_CHANGES.md), run the full test suite,
+apply every migration to a database copied from the previous schema, and remove
+all local credentials and prompt logs from the proposed commit.

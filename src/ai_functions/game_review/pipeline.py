@@ -30,12 +30,18 @@ from poker_engine.db.models import (
 from poker_engine.stats import _sum_hands, to_display
 
 from ai_functions.game_review import config
+from ai_functions.game_review.leak_taxonomy import (
+    get_threshold_profile,
+    sample_status,
+    threshold_profile_key_for_game,
+)
 from ai_functions.game_review.merge import merge_findings
 from ai_functions.game_review.session_dynamics import compute_session_dynamics
 from ai_functions.game_review.street_agent import BATCH_SIZE, STREETS, run_batch
 from ai_functions.game_review.synthesis import run_synthesis
 from ai_functions.game_review.triage import triage_hands
 from ai_functions.memory.persistence import build_profile_context, fold_and_persist
+from poker_engine.scenarios import profile_scope_for_game
 from ai_functions.memory.profile_status import compute_profile_status
 
 _log = logging.getLogger("prompts")
@@ -87,9 +93,18 @@ def _ensure_batches_created(db, evaluation: GameEvaluation, game: Game, hands: l
         return
 
     hero_gp_id = _hero_gp_id(game)
+    threshold_profile = get_threshold_profile(threshold_profile_key_for_game(game))
+    game_level = to_display(_sum_hands(hands, hero_gp_id))
     stats_snapshot = {
-        "game_level": to_display(_sum_hands(hands, hero_gp_id)),
+        "evaluation_kind": "current_game",
+        "game_level": game_level,
         "session_dynamics": compute_session_dynamics(hands, hero_gp_id),
+        "threshold_profile": {
+            "key": threshold_profile.key,
+            "version": threshold_profile.version,
+            "table_size_policy": "per_hand_supported_profiles",
+        },
+        "sample_status": sample_status(game_level, threshold_profile.key),
     }
     pools = triage_hands(hands, hero_gp_id)
 
@@ -247,7 +262,13 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
             return
 
         street_findings = _collect_street_findings(db, evaluation_id)
-        leak_tags = merge_findings(street_findings, evaluation.stats_snapshot["game_level"])
+        threshold_meta = evaluation.stats_snapshot.get("threshold_profile") or {}
+        threshold_profile = get_threshold_profile(threshold_meta.get("key"))
+        leak_tags = merge_findings(
+            street_findings,
+            evaluation.stats_snapshot["game_level"],
+            threshold_profile.key,
+        )
         evaluation.leak_tags = leak_tags
         evaluation.current_stage = "synthesis"
         db.commit()
@@ -257,7 +278,8 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
 
         # Read BEFORE this evaluation folds itself in, so its own result
         # can't contaminate its own report (decision 4).
-        player_profile = build_profile_context(db, evaluation.user_id)
+        profile_scope = profile_scope_for_game(game)
+        player_profile = build_profile_context(db, evaluation.user_id, profile_scope)
         profile_status_by_tag = compute_profile_status(player_profile, leak_tags)
 
         result = await run_synthesis(
@@ -269,12 +291,25 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
             user=user,
             player_profile=player_profile,
             profile_status_by_tag=profile_status_by_tag,
+            sample_status=evaluation.stats_snapshot["sample_status"],
         )
 
         already_folded = evaluation.folded_at is not None
 
-        evaluation.report = result["report"]
-        evaluation.model_versions = {"street_agent": config.MODEL, "synthesis": config.MODEL}
+        evaluation.report = {
+            **result["report"],
+            "report_kind": "current_game_observation",
+            "threshold_profile": {
+                "key": threshold_profile.key,
+                "version": threshold_profile.version,
+            },
+        }
+        evaluation.model_versions = {
+            "street_agent": config.MODEL,
+            "synthesis": config.MODEL,
+            "stat_threshold_profile": threshold_profile.key,
+            "stat_threshold_version": threshold_profile.version,
+        }
         evaluation.status = EvaluationStatus.COMPLETED
         evaluation.progress_current = evaluation.progress_total
         evaluation.completed_at = _now()

@@ -14,7 +14,7 @@ Example::
     class MyBot(LLMBot):
         style_name = "my_style"
         system_prompt = "You are a maniac who never folds..."
-        model = "gpt-4.1-mini"
+        model = "gpt-5.4-mini"
         temperature = 1.2
 """
 
@@ -27,7 +27,7 @@ class GTOBot(LLMBot):
     """Balanced, exploitability-minimising GTO style."""
 
     style_name = "AI GTO"
-    model = "gpt-4.1-mini"
+    model = "gpt-5.4-mini"
     temperature = 0.7
     system_prompt = (
         "You are an elite poker bot playing a near-optimal Game Theory Optimal (GTO) strategy in No-Limit Texas Hold'em. "
@@ -40,7 +40,7 @@ class FishBot(LLMBot):
     """Fish: plays based on gut feeling, no understanding of the game."""
 
     style_name = "AI Fish"
-    model = "gpt-4.1-mini"
+    model = "gpt-5.4-mini"
     temperature = 1.2
     system_prompt = (
         "You are a Fish poker bot in No-Limit Texas Hold'em. You have no understanding of the game, and play based purely on gut feeling."
@@ -52,7 +52,7 @@ class CallerBot(LLMBot):
     """Classic calling station: rarely folds or raises."""
 
     style_name = "AI Station"
-    model = "gpt-4.1-mini"
+    model = "gpt-5.4-mini"
     temperature = 0.5
     system_prompt = (
         "You are a calling-station poker bot in No-Limit Texas Hold'em. "

@@ -42,13 +42,17 @@ def _make_user(db, email):
     return user
 
 
-def _make_game(db, hero_user):
-    game = Game(small_blind=50, big_blind=100, buy_in=10000, max_round=50, hero_user_id=hero_user.id)
+def _make_game(db, hero_user, *, profile_scope="cash_100bb", game_format="cash", buy_in=10000):
+    game = Game(
+        small_blind=50, big_blind=100, buy_in=buy_in, max_round=50,
+        hero_user_id=hero_user.id, profile_scope=profile_scope,
+        game_format=game_format,
+    )
     db.add(game)
     db.flush()
     db.add(GamePlayer(
         game_id=game.id, seat_index=0, display_name="Hero", engine_uuid="hero-uuid",
-        user_id=hero_user.id, is_bot=False, starting_stack=10000,
+        user_id=hero_user.id, is_bot=False, starting_stack=buy_in,
     ))
     db.flush()
     return game
@@ -90,11 +94,13 @@ def test_discard_and_restore_round_trip_rebuild_matches_from_scratch(db_session,
         db.refresh(evaluation)
         assert evaluation.discarded_at is not None
 
-        profile = db.get(PlayerProfile, user.id)
+        profile = db.get(PlayerProfile, (user.id, "cash_100bb"))
         assert profile.evaluations_folded == 0
         assert profile.leaks == []
         # equals a from-scratch rebuild
-        assert rebuild_profile(db, user.id) == {"evaluations_folded": 0, "leaks": []}
+        assert rebuild_profile(db, user.id, scope_key="cash_100bb") == {
+            "evaluations_folded": 0, "leaks": [],
+        }
 
         resp = client.post(f"/api/games/{game.id}/evaluations/{evaluation.id}/restore")
         assert resp.status_code == 200
@@ -104,7 +110,7 @@ def test_discard_and_restore_round_trip_rebuild_matches_from_scratch(db_session,
 
         db.refresh(profile)
         assert profile.evaluations_folded == 1
-        assert rebuild_profile(db, user.id) == {
+        assert rebuild_profile(db, user.id, scope_key="cash_100bb") == {
             "evaluations_folded": profile.evaluations_folded, "leaks": profile.leaks,
         }
     finally:
@@ -134,10 +140,10 @@ def test_dispute_excludes_tag_and_rebuild_matches(db_session, monkeypatch):
         db.refresh(evaluation)
         assert evaluation.disputed_tags == ["missed_fold"]
 
-        profile = db.get(PlayerProfile, user.id)
+        profile = db.get(PlayerProfile, (user.id, "cash_100bb"))
         # Disputed tag contributes nothing -> no record for it at all.
         assert not any(r["tag"] == "missed_fold" for r in profile.leaks)
-        assert rebuild_profile(db, user.id) == {
+        assert rebuild_profile(db, user.id, scope_key="cash_100bb") == {
             "evaluations_folded": profile.evaluations_folded, "leaks": profile.leaks,
         }
 
@@ -264,7 +270,7 @@ def test_coaching_profile_groups_leaks_by_status(db_session, monkeypatch):
         client.post(f"/api/games/{game.id}/evaluations/{evaluation.id}/discard")
         client.post(f"/api/games/{game.id}/evaluations/{evaluation.id}/restore")
 
-        resp = client.get("/api/profile/coaching")
+        resp = client.get("/api/profile/coaching?scope=cash_100bb")
         assert resp.status_code == 200
         body = resp.json()
         assert body["evaluations_folded"] == 1
@@ -272,6 +278,34 @@ def test_coaching_profile_groups_leaks_by_status(db_session, monkeypatch):
         assert flagged_tags == ["missed_fold"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_profile_histories_are_isolated_by_training_scope(db_session):
+    db = db_session
+    user = _make_user(db, "scoped@test.local")
+    cash = _make_game(db, user)
+    mtt = _make_game(
+        db, user, profile_scope="mtt_25_40bb",
+        game_format="tournament", buy_in=2500,
+    )
+    now = datetime.now(timezone.utc)
+    _make_completed_evaluation(
+        db, user, cash, now,
+        [{"tag": "missed_fold", "kind": "judgment", "severity": 1, "citations": []}],
+    )
+    _make_completed_evaluation(
+        db, user, mtt, now,
+        [{"tag": "bad_bluff_spot", "kind": "judgment", "severity": 1, "citations": []}],
+    )
+    db.commit()
+
+    cash_state = rebuild_profile(db, user.id, scope_key="cash_100bb")
+    mtt_state = rebuild_profile(db, user.id, scope_key="mtt_25_40bb")
+
+    assert cash_state["evaluations_folded"] == 1
+    assert mtt_state["evaluations_folded"] == 1
+    assert {row["tag"] for row in cash_state["leaks"]} == {"missed_fold"}
+    assert {row["tag"] for row in mtt_state["leaks"]} == {"bad_bluff_spot"}
 
 
 def test_reset_sets_reset_at_and_never_touches_evaluation_rows(db_session, monkeypatch):
@@ -290,13 +324,13 @@ def test_reset_sets_reset_at_and_never_touches_evaluation_rows(db_session, monke
 
     client = _client(db, user)
     try:
-        resp = client.post("/api/profile/reset")
+        resp = client.post("/api/profile/reset?scope=cash_100bb")
         assert resp.status_code == 200
         body = resp.json()
         assert body["evaluations_folded"] == 0
         assert body["reset_at"] is not None
 
-        profile = db.get(PlayerProfile, user.id)
+        profile = db.get(PlayerProfile, (user.id, "cash_100bb"))
         assert profile.evaluations_folded == 0
         assert profile.leaks == []
         assert profile.reset_at is not None

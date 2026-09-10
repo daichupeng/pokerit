@@ -69,6 +69,20 @@ def test_blind_only_hand_is_not_vpip():
     assert counts.pfr_hands == 0
 
 
+def test_big_blind_free_check_is_not_vpip():
+    hand = _hand(
+        Street.FLOP, False,
+        [_hp(HERO, position="BB"), _hp(VILLAIN, position="SB")],
+        [
+            _act(VILLAIN, Street.PREFLOP, "call", 50, 0),
+            _act(HERO, Street.PREFLOP, "call", 0, 1),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+    assert counts.vpip_hands == 0
+    assert counts.limp_hands == 0
+
+
 def test_pfr_hand_hero_raises_preflop():
     hand = _hand(
         Street.PREFLOP,
@@ -115,6 +129,33 @@ def test_three_bet_opportunity_declined():
     assert counts.three_bet_hands == 0
 
 
+def test_raise_after_hero_fold_is_not_a_three_bet_opportunity():
+    hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO), _hp(VILLAIN), _hp(VILLAIN2)],
+        [
+            _act(HERO, Street.PREFLOP, "fold", 0, 0),
+            _act(VILLAIN, Street.PREFLOP, "raise", 300, 1),
+        ],
+    )
+    assert compute_hand_stats(hand, HERO).three_bet_opportunities == 0
+
+
+def test_cold_four_bet_is_not_counted_as_three_bet():
+    hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO), _hp(VILLAIN), _hp(VILLAIN2)],
+        [
+            _act(VILLAIN, Street.PREFLOP, "raise", 300, 0),
+            _act(VILLAIN2, Street.PREFLOP, "raise", 900, 1),
+            _act(HERO, Street.PREFLOP, "raise", 2400, 2),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+    assert counts.three_bet_opportunities == 0
+    assert counts.three_bet_hands == 0
+
+
 def test_fold_to_3bet():
     hand = _hand(
         Street.PREFLOP,
@@ -129,6 +170,38 @@ def test_fold_to_3bet():
     counts = compute_hand_stats(hand, HERO)
     assert counts.faced_3bet_after_raise == 1
     assert counts.folded_to_3bet == 1
+
+
+def test_three_bettor_folding_to_four_bet_is_not_fold_to_three_bet():
+    hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO), _hp(VILLAIN)],
+        [
+            _act(VILLAIN, Street.PREFLOP, "raise", 300, 0),
+            _act(HERO, Street.PREFLOP, "raise", 900, 1),
+            _act(VILLAIN, Street.PREFLOP, "raise", 2400, 2),
+            _act(HERO, Street.PREFLOP, "fold", 0, 3),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+    assert counts.faced_3bet_after_raise == 0
+    assert counts.folded_to_3bet == 0
+
+
+def test_open_raiser_folding_after_cold_four_bet_is_not_fold_to_three_bet():
+    hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO), _hp(VILLAIN), _hp(VILLAIN2)],
+        [
+            _act(HERO, Street.PREFLOP, "raise", 300, 0),
+            _act(VILLAIN, Street.PREFLOP, "raise", 900, 1),
+            _act(VILLAIN2, Street.PREFLOP, "raise", 2400, 2),
+            _act(HERO, Street.PREFLOP, "fold", 0, 3),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+    assert counts.faced_3bet_after_raise == 0
+    assert counts.folded_to_3bet == 0
 
 
 def test_cbet_on_each_street():
@@ -151,6 +224,51 @@ def test_cbet_on_each_street():
     assert counts.cbet_opportunities_flop == 1 and counts.cbet_flop == 1
     assert counts.cbet_opportunities_turn == 1 and counts.cbet_turn == 1
     assert counts.cbet_opportunities_river == 1 and counts.cbet_river == 1
+
+
+def test_in_position_cbet_after_opponent_check_is_counted():
+    hand = _hand(
+        Street.FLOP, False,
+        [_hp(HERO), _hp(VILLAIN)],
+        [
+            _act(HERO, Street.PREFLOP, "raise", 300, 0),
+            _act(VILLAIN, Street.PREFLOP, "call", 300, 1),
+            _act(VILLAIN, Street.FLOP, "call", 0, 2),
+            _act(HERO, Street.FLOP, "raise", 200, 3),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+    assert counts.cbet_opportunities_flop == 1
+    assert counts.cbet_flop == 1
+
+
+def test_donk_bet_removes_cbet_opportunity():
+    hand = _hand(
+        Street.FLOP, False,
+        [_hp(HERO), _hp(VILLAIN)],
+        [
+            _act(HERO, Street.PREFLOP, "raise", 300, 0),
+            _act(VILLAIN, Street.PREFLOP, "call", 300, 1),
+            _act(VILLAIN, Street.FLOP, "raise", 200, 2),
+            _act(HERO, Street.FLOP, "call", 200, 3),
+        ],
+    )
+    assert compute_hand_stats(hand, HERO).cbet_opportunities_flop == 0
+
+
+def test_preflop_allin_runout_has_no_postflop_cbet_opportunities():
+    hand = _hand(
+        Street.RIVER, True,
+        [_hp(HERO), _hp(VILLAIN)],
+        [
+            _act(HERO, Street.PREFLOP, "raise", 1000, 0),
+            _act(VILLAIN, Street.PREFLOP, "call", 1000, 1),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+    assert counts.cbet_opportunities_flop == 0
+    assert counts.cbet_opportunities_turn == 0
+    assert counts.cbet_opportunities_river == 0
 
 
 def test_fold_to_cbet():
@@ -192,6 +310,19 @@ def test_wtsd_hand():
     assert counts.won_at_showdown_hands == 0
 
 
+def test_table_reaching_flop_after_hero_folds_does_not_count_as_saw_flop():
+    hand = _hand(
+        Street.FLOP, False,
+        [_hp(HERO), _hp(VILLAIN), _hp(VILLAIN2)],
+        [
+            _act(HERO, Street.PREFLOP, "fold", 0, 0),
+            _act(VILLAIN, Street.PREFLOP, "raise", 300, 1),
+            _act(VILLAIN2, Street.PREFLOP, "call", 300, 2),
+        ],
+    )
+    assert compute_hand_stats(hand, HERO).saw_flop_hands == 0
+
+
 def test_won_at_showdown_hand():
     hand = _hand(
         Street.RIVER,
@@ -225,6 +356,29 @@ def test_position_split():
     assert counts.by_position["CO"].hands_dealt == 1
 
 
+def test_table_size_split_uses_each_hands_active_player_count():
+    eight_handed = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="BTN"), _hp(VILLAIN, position="BB")],
+        [_act(HERO, Street.PREFLOP, "raise", 300, 0)],
+    )
+    eight_handed.active_player_count = 8
+    six_handed = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="CO"), _hp(VILLAIN, position="BB")],
+        [_act(HERO, Street.PREFLOP, "fold", 0, 0)],
+    )
+    six_handed.active_player_count = 6
+
+    display = to_display(
+        compute_hand_stats(eight_handed, HERO) + compute_hand_stats(six_handed, HERO)
+    )
+
+    assert display["vpip"] == {"pct": 50.0, "n": 1, "d": 2}
+    assert display["by_table_size"]["8"]["vpip"] == {"pct": 100.0, "n": 1, "d": 1}
+    assert display["by_table_size"]["6"]["vpip"] == {"pct": 0.0, "n": 0, "d": 1}
+
+
 def test_aggression_factor_components():
     hand = _hand(
         Street.RIVER,
@@ -241,9 +395,14 @@ def test_aggression_factor_components():
         ],
     )
     counts = compute_hand_stats(hand, HERO)
-    # Postflop: 1 raise (flop) + 2 calls (turn check-call, turn facing raise call).
+    # Postflop: checks are CALL amount=0 in storage and must not enter AF.
     assert counts.postflop_bets_raises == 1
-    assert counts.postflop_calls == 2
+    assert counts.postflop_calls == 1
+
+
+def test_aggression_factor_with_no_calls_is_infinite_not_zero():
+    display = to_display(RawStatCounts(postflop_bets_raises=3, postflop_calls=0))
+    assert display["aggression_factor"] == {"ratio": None, "infinite": True, "n": 3, "d": 0}
 
 
 def test_rollup_is_sum_not_average():
@@ -266,8 +425,8 @@ def test_rollup_is_sum_not_average():
     assert abs(display["vpip"]["pct"] - 17.5) > 1.0
 
 
-def test_to_display_zero_denominator_shows_zero_not_error():
+def test_to_display_zero_denominator_is_undefined_not_zero():
     counts = RawStatCounts()
     display = to_display(counts)
-    assert display["vpip"] == {"pct": 0.0, "n": 0, "d": 0}
+    assert display["vpip"] == {"pct": None, "n": 0, "d": 0}
     assert display["hands_dealt"] == 0

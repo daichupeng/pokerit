@@ -21,6 +21,7 @@ from poker_engine.bots.llm_styles import LLM_STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind
 from poker_engine.recorder import PerspectiveRecorder
 from poker_trainer.game.serialize import build_round_state, build_view
+from poker_trainer.preferences import DEFAULT_POSTFLOP_QUICK, DEFAULT_PREFLOP_QUICK
 
 # Automations that fire without any explicit call:
 #   ANTE_POSTING           post antes at hand start
@@ -49,6 +50,25 @@ _STREET_NAMES = {0: "preflop", 1: "flop", 2: "turn", 3: "river"}
 _BOARD_CARDS_PER_STREET = {1: 3, 2: 1, 3: 1}
 
 
+def _showdown_contender_uuids(
+    active_uuids: list[str], action_histories: dict[str, list[dict]],
+) -> set[str]:
+    """Players still holding a live hand when betting ended.
+
+    PokerKit may clear losing/mucked hole cards during its showdown
+    automations, so terminal ``state.hole_cards`` cannot tell us whether a
+    showdown occurred.  Folding, however, is explicit and permanent: two or
+    more active seats that never folded necessarily reached showdown.
+    """
+    folded = {
+        entry.get("uuid")
+        for actions in action_histories.values()
+        for entry in actions
+        if str(entry.get("action", "")).upper() == "FOLD"
+    }
+    return {uuid_ for uuid_ in active_uuids if uuid_ not in folded}
+
+
 class GameSession:
     def __init__(self, config: GameConfig, hero_index: int = 0, seed: int | None = None):
         config.validate()
@@ -73,6 +93,10 @@ class GameSession:
                 kind_val = spec.kind.value
                 if kind_val in LLM_STYLE_REGISTRY:
                     bot = LLM_STYLE_REGISTRY[kind_val]()
+                    self._bot_params_by_uuid[self.seat_uuids[index]] = {
+                        "model": bot.model,
+                        "temperature": bot.temperature,
+                    }
                 else:
                     bot_cls = STYLE_REGISTRY[kind_val]
                     bot_seed = None if seed is None else seed + index
@@ -115,8 +139,8 @@ class GameSession:
         self.finished = False
         self._pending_ask: dict | None = None
         self._last_view: dict | None = None
-        self.preflop_quick: list[float] = [2.0, 2.5, 3.0, 4.0]
-        self.postflop_quick: list[float] = [33.0, 50.0, 75.0, 100.0]
+        self.preflop_quick: list[float] = list(DEFAULT_PREFLOP_QUICK)
+        self.postflop_quick: list[float] = list(DEFAULT_POSTFLOP_QUICK)
 
     # -- public config -------------------------------------------------------
 
@@ -125,6 +149,13 @@ class GameSession:
             "small_blind": self.config.small_blind,
             "big_blind": self.config.big_blind,
             "buy_in": self.config.buy_in,
+            "starting_stack_bb": round(self.config.buy_in / self.config.big_blind, 1),
+            "ante": self.config.ante,
+            "ante_type": self.config.ante_type,
+            "game_format": self.config.game_format,
+            "scenario": self.config.scenario,
+            "tournament_stage": self.config.tournament_stage,
+            "profile_scope": self.config.profile_scope,
             "preflop_quick": self.preflop_quick,
             "postflop_quick": self.postflop_quick,
         }
@@ -160,6 +191,10 @@ class GameSession:
         active_seats = [i for i in range(n) if self._stacks[i] > 0]
         n_active = len(active_seats)
         self._active_seats = active_seats  # stored for position labelling
+        for seat_i in active_seats:
+            bot = self._bot_players.get(seat_i)
+            if bot is not None:
+                bot.set_n_players(n_active)
 
         # Rotate dealer button among active seats.
         btn_active_idx = (self._hand_num - 1) % n_active
@@ -188,8 +223,8 @@ class GameSession:
 
         self._state = NoLimitTexasHoldem.create_state(
             automations=_AUTOMATIONS,
-            ante_trimming_status=True,
-            raw_antes=self.config.ante,
+            ante_trimming_status=self.config.ante_trimming_status,
+            raw_antes=self.config.raw_antes(n_active),
             raw_blinds_or_straddles=(self.config.small_blind, self.config.big_blind),
             min_bet=self.config.big_blind,
             raw_starting_stacks=rotated_stacks,
@@ -245,6 +280,10 @@ class GameSession:
         active_seats = [i for i in range(n) if self._stacks[i] > 0]
         n_active = len(active_seats)
         self._active_seats = active_seats
+        for seat_i in active_seats:
+            bot = self._bot_players.get(seat_i)
+            if bot is not None:
+                bot.set_n_players(n_active)
 
         btn_active_idx = (self._hand_num - 1) % n_active
         btn_pos = active_seats[btn_active_idx]
@@ -268,8 +307,8 @@ class GameSession:
 
         self._state = NoLimitTexasHoldem.create_state(
             automations=_AUTOMATIONS,
-            ante_trimming_status=True,
-            raw_antes=self.config.ante,
+            ante_trimming_status=self.config.ante_trimming_status,
+            raw_antes=self.config.raw_antes(n_active),
             raw_blinds_or_straddles=(self.config.small_blind, self.config.big_blind),
             min_bet=self.config.big_blind,
             raw_starting_stacks=rotated_stacks,
@@ -444,7 +483,9 @@ class GameSession:
         # Build final community cards (may be incomplete if hand ended early)
         community = pk_adapter.cards_to_strs(c for group in state.board_cards for c in group)
 
-        # Collect all hole cards (both revealed at showdown and unrevealed)
+        # Cards that PokerKit leaves visible after its show/muck automations.
+        # This is visibility data only; it is deliberately not used to decide
+        # whether the hand reached showdown.
         n_active = len(self._pk_to_seat)
         hole_by_pk: dict[int, list[str]] = {}
         for pk_i in range(n_active):
@@ -479,24 +520,37 @@ class GameSession:
         if not winner_uuids and pot_winners:
             winner_uuids = [u for p in pot_winners for u in p["winners"]]
 
-        # Showdown: players whose cards are known (not the hero — shown separately)
+        active_hand_uuids = [
+            self.seat_uuids[seat_i] for seat_i in self._pk_to_seat
+        ]
+        showdown_contenders = _showdown_contender_uuids(
+            active_hand_uuids, self._action_histories,
+        )
+        had_showdown = len(showdown_contenders) >= 2
+
+        # Showdown metadata is emitted only for a real showdown.  A fold winner
+        # may still have cards present in PokerKit, but those cards stay hidden.
         showdown = []
         hero_hole = list(self._hero_hole)  # internal format for evaluation
-        for pk_i, hole in hole_by_pk.items():
-            seat_i = self._pk_to_seat[pk_i]
-            best = pk_adapter.best_five(hole, community)
-            showdown.append({
-                "uuid": self.seat_uuids[seat_i],
-                "hand_label": best["label"],
-                "best_cards": best["cards"],
-            })
+        if had_showdown:
+            for pk_i, hole in hole_by_pk.items():
+                seat_i = self._pk_to_seat[pk_i]
+                best = pk_adapter.best_five(hole, community)
+                showdown.append({
+                    "uuid": self.seat_uuids[seat_i],
+                    "hand_label": best["label"],
+                    "best_cards": best["cards"],
+                })
 
         # Revealed: opponents' cards at showdown (exclude hero)
-        revealed = {
-            self.seat_uuids[self._pk_to_seat[pk_i]]: hole
-            for pk_i, hole in hole_by_pk.items()
-            if self._pk_to_seat[pk_i] != self.hero_index
-        }
+        revealed = (
+            {
+                self.seat_uuids[self._pk_to_seat[pk_i]]: hole
+                for pk_i, hole in hole_by_pk.items()
+                if self._pk_to_seat[pk_i] != self.hero_index
+            }
+            if had_showdown else {}
+        )
 
         # Record hand result
         winner_dicts = [{"uuid": u} for u in winner_uuids]
@@ -511,7 +565,13 @@ class GameSession:
             final_stacks=self._stacks,
             pot_total_override=pot_total,
         )
-        self.recorder._record_round_result(winner_dicts, hand_info, round_state_dict, revealed_uuids=set(revealed.keys()))
+        self.recorder._record_round_result(
+            winner_dicts,
+            hand_info,
+            round_state_dict,
+            revealed_uuids=set(revealed),
+            had_showdown=had_showdown,
+        )
 
         # Build the view with hero hole cards preserved
         final_view = self._build_view(hero_hole_override=hero_hole, community_override=community)
@@ -617,11 +677,16 @@ class GameSession:
 
     # -- public state accessors ----------------------------------------------
 
-    def current_round_state(self) -> dict | None:
+    def current_round_state(self, *, for_coach: bool = False) -> dict | None:
         """Return the current round_state dict, or None if no hand is in progress."""
         if self._state is None:
             return None
-        return self._build_round_state_dict()
+        state = self._build_round_state_dict()
+        if for_coach:
+            for seat in state.get("seats", []):
+                meta = self.seat_meta.get(seat.get("uuid"), {})
+                seat["bot_style"] = meta.get("style") if meta.get("is_bot") else None
+        return state
 
     def current_view(self) -> dict:
         if self._last_view is None:

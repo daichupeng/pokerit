@@ -158,7 +158,14 @@ class PerspectiveRecorder:
         self._current = hand
         self._hands.append(hand)
 
-    def _record_round_result(self, winners, hand_info, round_state, revealed_uuids: set[str] | None = None):
+    def _record_round_result(
+        self,
+        winners,
+        hand_info,
+        round_state,
+        revealed_uuids: set[str] | None = None,
+        had_showdown: bool | None = None,
+    ):
         hand = self._current
         if hand is None:
             return
@@ -171,7 +178,13 @@ class PerspectiveRecorder:
         hand.street_reached = _street(round_state.get("street"))
         hand.pot = round_state.get("pot")
         hand.pot_total = _pot_total(hand.pot)
-        hand.had_showdown = bool(revealed_uuids) if revealed_uuids is not None else bool(hand_info)
+        # Card visibility and showdown occurrence are separate facts.  The
+        # live PokerKit session passes the authoritative value.  Legacy engine
+        # callbacks expose only showdown participants in ``hand_info``, where
+        # two or more entries are the safest compatible fallback.
+        if had_showdown is None:
+            had_showdown = len(hand_info or []) >= 2
+        hand.had_showdown = bool(had_showdown)
         hand.winners = {w["uuid"] for w in winners}
         hand.final_stacks = {s["uuid"]: s["stack"] for s in round_state.get("seats", [])}
 
@@ -275,6 +288,11 @@ class PerspectiveRecorder:
             ante=config.ante,
             buy_in=config.buy_in,
             max_round=config.max_round,
+            game_format=config.game_format,
+            scenario=config.scenario,
+            ante_type=config.ante_type,
+            tournament_stage=config.tournament_stage,
+            profile_scope=config.profile_scope,
             hero_user_id=hero_user.id if hero_user else None,
             rule={
                 "small_blind": config.small_blind,
@@ -282,6 +300,11 @@ class PerspectiveRecorder:
                 "ante": config.ante,
                 "buy_in": config.buy_in,
                 "max_round": config.max_round,
+                "game_format": config.game_format,
+                "scenario": config.scenario,
+                "ante_type": config.ante_type,
+                "tournament_stage": config.tournament_stage,
+                "profile_scope": config.profile_scope,
             },
         )
         session.add(game)
@@ -389,6 +412,7 @@ class PerspectiveRecorder:
             button_pos=hand_rec.button_pos,
             sb_pos=hand_rec.sb_pos,
             bb_pos=hand_rec.bb_pos,
+            active_player_count=len(hand_rec.active_seats) or len(hand_rec.starting_stacks),
             street_reached=hand_rec.street_reached,
             board=hand_rec.board,
             pot_total=hand_rec.pot_total,
@@ -400,10 +424,12 @@ class PerspectiveRecorder:
         for uuid_, gp in gp_by_uuid.items():
             start = hand_rec.starting_stacks.get(uuid_)
             final = hand_rec.final_stacks.get(uuid_)
-            # Store all hole cards (both revealed and unrevealed)
-            cards = hand_rec.all_hole_cards.get(uuid_)
-            # A player's cards are "revealed" only if they were shown in the UI (hero or showdown)
-            is_revealed = uuid_ in hand_rec.revealed_cards
+            # Persist only cards the hero was entitled to see.  The recorder
+            # keeps the full deal transiently for engine bookkeeping, but
+            # unrevealed opponent cards must not survive in the database.
+            is_hero = uuid_ == self._hero_uuid
+            is_revealed = is_hero or uuid_ in hand_rec.revealed_cards
+            cards = hand_rec.all_hole_cards.get(uuid_) if is_revealed else None
             won = uuid_ in hand_rec.winners
             amount_won = (final - start) if (final is not None and start is not None) else 0
             pos = ""
@@ -456,7 +482,8 @@ class PerspectiveRecorder:
                     a for a in hand_rec.actions
                     if a.engine_uuid == uuid_ and a.street == Street.PREFLOP
                 ]
-                if any(a.action in _VPIP_ACTIONS for a in preflop_actions):
+                if any(a.action == "raise" or (a.action == "call" and a.amount > 0)
+                       for a in preflop_actions):
                     gp.vpip_count += 1
                 if any(a.action == "raise" for a in preflop_actions):
                     gp.pfr_count += 1

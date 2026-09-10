@@ -11,17 +11,20 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from poker_engine.db.models import EvaluationStatus, GameEvaluation, PlayerProfile
+from poker_engine.scenarios import DEFAULT_PROFILE_SCOPE, profile_scope_for_game
 
 
 def _now():
     return datetime.now(timezone.utc)
 
 
-def load_profile_row(db, user_id) -> PlayerProfile | None:
-    return db.get(PlayerProfile, user_id)
+def load_profile_row(db, user_id, scope_key: str = DEFAULT_PROFILE_SCOPE) -> PlayerProfile | None:
+    return db.get(PlayerProfile, (user_id, scope_key))
 
 
-def query_folded_evaluations(db, user_id, reset_at=None) -> list[GameEvaluation]:
+def query_folded_evaluations(
+    db, user_id, reset_at=None, scope_key: str = DEFAULT_PROFILE_SCOPE
+) -> list[GameEvaluation]:
     """Evaluations currently eligible for the fold, per decision 2:
     ``status == COMPLETED``, ``discarded_at IS NULL``, ``completed_at`` after
     ``reset_at`` (if given), and only the latest such evaluation per game
@@ -35,7 +38,11 @@ def query_folded_evaluations(db, user_id, reset_at=None) -> list[GameEvaluation]
     )
     if reset_at is not None:
         query = query.where(GameEvaluation.completed_at > reset_at)
-    candidates = db.execute(query).scalars().all()
+    candidates = [
+        evaluation
+        for evaluation in db.execute(query).scalars().all()
+        if profile_scope_for_game(evaluation.game) == scope_key
+    ]
 
     latest_by_game: dict = {}
     for evaluation in candidates:
@@ -56,6 +63,7 @@ def evaluation_to_fold_input(evaluation: GameEvaluation) -> dict:
         "leak_tags": evaluation.leak_tags or [],
         "disputed_tags": evaluation.disputed_tags or [],
         "stats_snapshot": stats_snapshot.get("game_level") or {},
+        "threshold_profile": (stats_snapshot.get("threshold_profile") or {}).get("key"),
     }
 
 
@@ -66,6 +74,7 @@ def save_profile_row(
     playstyle_summary: str | None,
     model_versions: dict | None = None,
     reset_at=None,
+    scope_key: str = DEFAULT_PROFILE_SCOPE,
 ) -> PlayerProfile:
     """Upsert ``player_profiles`` for ``user_id`` with the given fold state.
 
@@ -73,9 +82,9 @@ def save_profile_row(
     explicitly overridden (the reset route is the only caller that overrides
     it) — folding/rebuilding never touches it themselves.
     """
-    row = db.get(PlayerProfile, user_id)
+    row = load_profile_row(db, user_id, scope_key)
     if row is None:
-        row = PlayerProfile(user_id=user_id)
+        row = PlayerProfile(user_id=user_id, scope_key=scope_key)
         db.add(row)
     row.evaluations_folded = state["evaluations_folded"]
     row.leaks = state["leaks"]
@@ -90,7 +99,9 @@ def save_profile_row(
     return row
 
 
-def build_profile_context(db, user_id) -> dict | None:
+def build_profile_context(
+    db, user_id, scope_key: str = DEFAULT_PROFILE_SCOPE
+) -> dict | None:
     """The ``player_profile`` pinned-context dict for synthesis: this user's
     current leak states, stat trends, and playstyle summary — or ``None`` if
     they have no profile yet (a first-ever evaluation), so synthesis can omit
@@ -98,21 +109,24 @@ def build_profile_context(db, user_id) -> dict | None:
     """
     from ai_functions.memory.trends import compute_trends
 
-    row = load_profile_row(db, user_id)
+    row = load_profile_row(db, user_id, scope_key)
     if row is None or not row.evaluations_folded:
         return None
 
-    folded = query_folded_evaluations(db, user_id, row.reset_at)
+    folded = query_folded_evaluations(db, user_id, row.reset_at, scope_key)
     snapshots = [(e.stats_snapshot or {}).get("game_level") or {} for e in folded]
     return {
         "evaluations_folded": row.evaluations_folded,
         "leaks": row.leaks,
         "trends": compute_trends(snapshots),
         "playstyle_summary": row.playstyle_summary,
+        "profile_scope": scope_key,
     }
 
 
-async def _regenerate_and_save(db, user_id, state: dict, reset_at=None) -> PlayerProfile:
+async def _regenerate_and_save(
+    db, user_id, state: dict, reset_at=None, scope_key: str = DEFAULT_PROFILE_SCOPE
+) -> PlayerProfile:
     """Shared tail of fold_and_persist/rebuild_and_persist: recompute trends
     over the freshly-folded evaluation history, regenerate the playstyle
     summary from scratch (never appended, per decision 1), and persist.
@@ -120,13 +134,15 @@ async def _regenerate_and_save(db, user_id, state: dict, reset_at=None) -> Playe
     from ai_functions.memory.playstyle import generate_playstyle_summary
     from ai_functions.memory.trends import compute_trends
 
-    folded = query_folded_evaluations(db, user_id, reset_at)
+    folded = query_folded_evaluations(db, user_id, reset_at, scope_key)
     snapshots = [
         (e.stats_snapshot or {}).get("game_level") or {} for e in folded
     ]
     trends = compute_trends(snapshots)
     summary = await generate_playstyle_summary(state, trends)
-    return save_profile_row(db, user_id, state, summary, reset_at=reset_at)
+    return save_profile_row(
+        db, user_id, state, summary, reset_at=reset_at, scope_key=scope_key
+    )
 
 
 async def fold_and_persist(db, evaluation: GameEvaluation) -> PlayerProfile:
@@ -137,7 +153,8 @@ async def fold_and_persist(db, evaluation: GameEvaluation) -> PlayerProfile:
     """
     from ai_functions.memory.fold import EMPTY_PROFILE_STATE, fold_evaluation
 
-    existing_row = load_profile_row(db, evaluation.user_id)
+    scope_key = profile_scope_for_game(evaluation.game)
+    existing_row = load_profile_row(db, evaluation.user_id, scope_key)
     state = (
         {"evaluations_folded": existing_row.evaluations_folded, "leaks": existing_row.leaks}
         if existing_row is not None
@@ -145,10 +162,14 @@ async def fold_and_persist(db, evaluation: GameEvaluation) -> PlayerProfile:
     )
     reset_at = existing_row.reset_at if existing_row is not None else None
     next_state = fold_evaluation(state, evaluation_to_fold_input(evaluation))
-    return await _regenerate_and_save(db, evaluation.user_id, next_state, reset_at=reset_at)
+    return await _regenerate_and_save(
+        db, evaluation.user_id, next_state, reset_at=reset_at, scope_key=scope_key
+    )
 
 
-async def rebuild_and_persist(db, user_id, reset_at=None) -> PlayerProfile:
+async def rebuild_and_persist(
+    db, user_id, reset_at=None, scope_key: str = DEFAULT_PROFILE_SCOPE
+) -> PlayerProfile:
     """Full from-scratch rebuild, regenerate the summary, and persist. Every
     correction route (discard/restore/dispute/reset) uses this so the
     resulting profile always equals a from-scratch rebuild by construction.
@@ -159,7 +180,9 @@ async def rebuild_and_persist(db, user_id, reset_at=None) -> PlayerProfile:
     from ai_functions.memory.fold import rebuild_profile
 
     if reset_at is None:
-        existing = load_profile_row(db, user_id)
+        existing = load_profile_row(db, user_id, scope_key)
         reset_at = existing.reset_at if existing else None
-    state = rebuild_profile(db, user_id, reset_at=reset_at)
-    return await _regenerate_and_save(db, user_id, state, reset_at=reset_at)
+    state = rebuild_profile(db, user_id, reset_at=reset_at, scope_key=scope_key)
+    return await _regenerate_and_save(
+        db, user_id, state, reset_at=reset_at, scope_key=scope_key
+    )

@@ -61,6 +61,7 @@ def test_merge_findings_groups_by_tag_and_computes_occurrence_severity():
     assert tag["severity"] == 2  # 2 occurrences -> moderate band
     assert {c["hand_id"] for c in tag["citations"]} == {"h1", "h2"}
     assert {c["round_count"] for c in tag["citations"]} == {1, 2}
+    assert {c["note"] for c in tag["citations"]} == {"a", "b"}
 
 
 def test_merge_findings_single_occurrence_is_severity_one():

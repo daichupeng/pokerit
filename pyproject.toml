@@ -1,6 +1,6 @@
 [project]
 name = "poker-trainer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Poker webapp using PokerKit for game engine and hand evaluation"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

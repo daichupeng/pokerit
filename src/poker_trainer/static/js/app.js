@@ -67,6 +67,7 @@
       state.user = null; location.hash = "#/login";
     };
     document.getElementById("go-create").onclick = () => (location.hash = "#/create");
+    document.getElementById("go-drills").onclick = () => (location.hash = "#/drills");
     document.getElementById("go-history").onclick = () => (location.hash = "#/history");
     document.getElementById("see-all-history").onclick = () => (location.hash = "#/history");
     wireCoachBtns(null);
@@ -118,9 +119,10 @@
   function gameRow(g) {
     const row = document.createElement("button");
     row.className = "list-row";
+    const scenarioLabel = titleCase((g.scenario || "custom").replace(/_/g, " "));
     row.innerHTML =
       `<span class="lr-main">${fmtDate(g.started_at)}</span>` +
-      `<span class="lr-meta muted tiny">${g.small_blind}/${g.big_blind} · ${g.num_hands} hand${g.num_hands === 1 ? "" : "s"}</span>` +
+      `<span class="lr-meta muted tiny">${scenarioLabel} · ${g.starting_stack_bb}BB · ${g.small_blind}/${g.big_blind} · ${g.num_hands} hand${g.num_hands === 1 ? "" : "s"}</span>` +
       `<span class="lr-net">${netHTML(g.hero_net)}</span>`;
     row.onclick = () => (location.hash = "#/history/" + g.game_id);
     return row;
@@ -181,6 +183,10 @@
   }
 
   function titleCase(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
+  function escapeHTML(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
 
   // Hero's stats for this game, plus a comparison line against the hero's
   // rolling stats across every game they've played. Hero-only — no opponent
@@ -202,7 +208,8 @@
     }
     const gameHTML = window.heroStatsHTML ? window.heroStatsHTML(game, { title: "This game" }) : "";
     const careerHTML = window.heroStatsHTML ? window.heroStatsHTML(career, { title: "All games" }) : "";
-    el.innerHTML = `<div class="hands-stats-row">${gameHTML}${careerHTML}</div>`;
+    el.innerHTML = `<div class="hands-stats-row">${gameHTML}${careerHTML}</div>
+      <p class="muted tiny">All games is descriptive only — it combines formats and is not used for leak conclusions.</p>`;
   }
 
   // ---------- game evaluation (coach agent) ----------
@@ -297,6 +304,24 @@
     if (isDiscarded) {
       html += `<div class="eval-discarded-banner"><span>This evaluation is discarded and excluded from your coaching profile.</span></div>`;
     }
+    const thresholdMeta = (full.report && full.report.threshold_profile)
+      || (full.stats_snapshot && full.stats_snapshot.threshold_profile)
+      || {};
+    if (thresholdMeta.key || thresholdMeta.version) {
+      html += `<div class="eval-threshold-meta">Leak thresholds: ${thresholdMeta.key || "unknown"} · ${thresholdMeta.version || "unversioned"}</div>`;
+    }
+    const sampleMetrics = (((full.stats_snapshot || {}).sample_status || {}).metrics || []);
+    const insufficient = sampleMetrics.filter((metric) => metric.status === "insufficient_sample");
+    if (insufficient.length) {
+      const rows = insufficient.map((metric) =>
+        `<li>${metric.metric}: ${metric.observed} of ${metric.required} required observations</li>`
+      ).join("");
+      html += `<div class="eval-sample-banner">
+        <strong>Insufficient sample</strong>
+        <span>No leak conclusion was made for:</span>
+        <ul>${rows}</ul>
+      </div>`;
+    }
     html += `<div class="eval-summary">${(full.report && full.report.summary) || ""}</div>`;
     sections.forEach((s) => {
       const citations = (s.citations || []).map((c) => {
@@ -307,14 +332,38 @@
         ? `<span class="eval-profile-status ${s.profile_status}">${PROFILE_STATUS_LABEL[s.profile_status] || s.profile_status}</span>`
         : "";
       const isDisputed = disputedTags.has(s.tag);
+      const sectionSources = (s.evidence_sources || []).map((source) =>
+        `<span class="eval-evidence-chip">${escapeHTML((source.type || "unknown").replace(/_/g, " "))}</span>`
+      ).join("");
+      const examples = (s.examples || []).map((example) => {
+        const round = example.round_count;
+        const plan = example.future_plan
+          ? `<div><strong>Future plan:</strong> ${escapeHTML(example.future_plan)}</div>` : "";
+        const sources = (example.evidence_sources || []).map((source) =>
+          `<span class="eval-evidence-chip">${escapeHTML((source.type || "unknown").replace(/_/g, " "))}${source.pack_id ? ` · ${escapeHTML(source.pack_id)}` : ""}</span>`
+        ).join("");
+        return `<article class="eval-example">
+          <div class="eval-example-head">
+            <button class="eval-citation-chip" data-round="${round}">Hand #${round}</button>
+            <span>${escapeHTML(titleCase(example.street || ""))} · ${escapeHTML(example.confidence || "medium")} confidence</span>
+          </div>
+          <div><strong>Your action:</strong> ${escapeHTML(example.hero_action || "")}</div>
+          <div><strong>What went wrong:</strong> ${escapeHTML(example.issue || "")}</div>
+          <div><strong>Better line:</strong> ${escapeHTML(example.better_line || "")}</div>
+          <div><strong>Why:</strong> ${escapeHTML(example.why || "")}</div>
+          ${plan}
+          ${sources ? `<div class="eval-evidence"><strong>Evidence:</strong> ${sources}</div>` : ""}
+        </article>`;
+      }).join("");
       html += `<div class="eval-section-card">
         <div class="eval-section-head">
           <span class="eval-tag">${titleCase((s.tag || "").replace(/_/g, " "))}</span>
           <span class="eval-severity sev-${s.severity}">severity ${s.severity}</span>
           ${profileBadge}
         </div>
-        <p>${s.narrative || ""}</p>
-        <div class="eval-citations">${citations}</div>
+        <p>${escapeHTML(s.narrative || "")}</p>
+        ${sectionSources ? `<div class="eval-evidence"><strong>Evidence:</strong> ${sectionSources}</div>` : ""}
+        ${examples ? `<div class="eval-examples">${examples}</div>` : `<div class="eval-citations">${citations}</div>`}
         <div class="eval-section-foot">
           <button class="eval-dispute-btn${isDisputed ? " disputed" : ""}" data-tag="${s.tag}">
             ${isDisputed ? "Disputed ✓" : "Dispute this finding"}
@@ -602,6 +651,10 @@
     sb.addEventListener("input", () => { bb.value = (+sb.value || 0) * 2; }); // keep BB = 2*SB
 
     const random = $("cfg-random"), picker = $("styles-picker"), rows = $("styles-rows"), bots = $("cfg-bots");
+    const scenario = $("cfg-scenario"), gameFormat = $("cfg-format");
+    const anteType = $("cfg-ante-type"), ante = $("cfg-ante");
+    const presetFields = [bots, $("cfg-buyin"), sb, bb, gameFormat, anteType, ante];
+    let SCENARIOS = {};
     let STYLES = [];
     fetch("/api/bot-styles").then(r => r.json()).then(data => {
       STYLES = data;
@@ -624,41 +677,54 @@
     bots.addEventListener("input", rebuildPicker);
     rebuildPicker();
 
-    // --- quick-bet preset editors (separate preflop / postflop, up to 5 each) ---
-    const preflopRows = $("preflop-rows"), postflopRows = $("postflop-rows");
-    function addChip(container, value, suffix) {
-      if (container.children.length >= 5) return;
-      const chip = document.createElement("span");
-      chip.className = "quick-chip";
-      chip.innerHTML =
-        `<input type="number" class="qv" min="0.1" step="0.5" value="${value}" />` +
-        `<span class="qsfx">${suffix}</span>` +
-        `<button type="button" class="qx" title="remove">✕</button>`;
-      chip.querySelector(".qx").onclick = () => chip.remove();
-      container.appendChild(chip);
+    function updateAnteState(isCustom) {
+      ante.disabled = !isCustom || anteType.value === "none";
+      if (anteType.value === "none") ante.value = 0;
     }
-    [2, 2.5, 3.5, 4.5].forEach((v) => addChip(preflopRows, v, "× BB"));
-    [33, 50, 65, 100].forEach((v) => addChip(postflopRows, v, "% Pot"));
-    $("preflop-add").onclick = () => addChip(preflopRows, 3, "× BB");
-    $("postflop-add").onclick = () => addChip(postflopRows, 50, "% Pot");
-    const readChips = (c) => Array.from(c.querySelectorAll(".qv"))
-      .map((i) => +i.value).filter((v) => v > 0);
+    function applyScenario() {
+      const isCustom = scenario.value === "custom";
+      presetFields.forEach((el) => { el.disabled = !isCustom; });
+      const preset = SCENARIOS[scenario.value];
+      if (preset) {
+        bots.value = preset.num_bots;
+        $("cfg-buyin").value = preset.buy_in;
+        sb.value = preset.small_blind;
+        bb.value = preset.big_blind;
+        gameFormat.value = preset.game_format;
+        anteType.value = preset.ante_type;
+        ante.value = preset.ante;
+        $("cfg-scenario-description").textContent = preset.description;
+      } else {
+        $("cfg-scenario-description").textContent =
+          "Custom fixed-level practice. Tournament mode does not simulate blind increases or ICM.";
+      }
+      updateAnteState(isCustom);
+      rebuildPicker();
+    }
+    scenario.addEventListener("change", applyScenario);
+    anteType.addEventListener("change", () => updateAnteState(scenario.value === "custom"));
+    fetch("/api/game-scenarios").then(r => r.json()).then(data => {
+      SCENARIOS = Object.fromEntries(data.map((item) => [item.key, item]));
+      applyScenario();
+    });
 
     $("create-start").onclick = async () => {
       const err = $("create-error"); err.classList.add("hidden");
       const styles = random.checked ? null
         : Array.from(rows.querySelectorAll("select")).map((s) => s.value);
       const body = {
+        scenario: scenario.value,
+        game_format: gameFormat.value,
         num_bots: clamp(+bots.value, 1, 8),
         small_blind: +sb.value,
         big_blind: +bb.value,
         buy_in: +$("cfg-buyin").value,
+        ante: +ante.value,
+        ante_type: anteType.value,
         max_round: clamp(+$("cfg-rounds").value, 1, 500),
         randomize_styles: random.checked,
         hide_styles: $("cfg-hide").checked,
         styles,
-        preflop_quick: readChips(preflopRows),
-        postflop_quick: readChips(postflopRows),
         // Hero identity comes from the session on the server, not the client.
       };
       try {
@@ -669,6 +735,23 @@
         err.textContent = e.message; err.classList.remove("hidden");
       }
     };
+  }
+
+  function addQuickChip(container, value, suffix) {
+    if (container.children.length >= 5) return;
+    const chip = document.createElement("span");
+    chip.className = "quick-chip";
+    chip.innerHTML =
+      `<input type="number" class="qv" min="0.1" max="1000" step="0.5" value="${value}" />` +
+      `<span class="qsfx">${suffix}</span>` +
+      `<button type="button" class="qx" title="remove">✕</button>`;
+    chip.querySelector(".qx").onclick = () => chip.remove();
+    container.appendChild(chip);
+  }
+
+  function readQuickChips(container) {
+    return Array.from(container.querySelectorAll(".qv"))
+      .map((input) => +input.value).filter((value) => value > 0);
   }
 
   function showTable(gameId) {
@@ -702,6 +785,12 @@
     $("pf-timezone").value = p.timezone || "";
     $("pf-language").value = p.language || "";
     $("pf-avatar-url").value = p.avatar_url || "";
+    const shortcuts = (p.preferences || {}).bet_shortcuts_v1 || {};
+    const preflopRows = $("pf-preflop-rows"), postflopRows = $("pf-postflop-rows");
+    (shortcuts.preflop || [2, 2.5, 6, 7.5]).forEach((v) => addQuickChip(preflopRows, v, "× BB"));
+    (shortcuts.postflop || [33, 50, 65, 100]).forEach((v) => addQuickChip(postflopRows, v, "% Pot"));
+    $("pf-preflop-add").onclick = () => addQuickChip(preflopRows, 2.5, "× BB");
+    $("pf-postflop-add").onclick = () => addQuickChip(postflopRows, 50, "% Pot");
 
     $("pf-save").onclick = async () => {
       const err = $("pf-error"), ok = $("pf-saved");
@@ -714,6 +803,12 @@
         timezone: $("pf-timezone").value.trim() || null,
         language: $("pf-language").value.trim() || null,
         avatar_url: $("pf-avatar-url").value.trim() || null,
+        preferences: {
+          bet_shortcuts_v1: {
+            preflop: readQuickChips(preflopRows),
+            postflop: readQuickChips(postflopRows),
+          },
+        },
       };
       try {
         state.user = await api("/api/profile", { method: "PATCH", body: JSON.stringify(body) });
@@ -726,6 +821,98 @@
       await api("/api/profile", { method: "DELETE" });
       state.user = null; location.hash = "#/login";
     };
+  }
+
+  async function showDrills() {
+    if (!state.user) { location.hash = "#/login"; return; }
+    screen("drills");
+    const $ = (id) => document.getElementById(id);
+    $("drills-back").onclick = () => (location.hash = "#/");
+    wireCoachBtns(null);
+    let modes = [];
+    let activeSession = null;
+    let pendingNext = null;
+    const select = $("drill-mode"), source = $("drill-source"), error = $("drill-error");
+
+    function renderSource() {
+      const mode = modes.find((item) => item.id === select.value);
+      if (!mode) return;
+      const derivation = mode.source.derived
+        ? `<br><strong>Derived:</strong> ${escapeHTML(mode.source.derivation || "")}` : "";
+      source.innerHTML = `<strong>Node:</strong> ${escapeHTML(mode.node)} · <strong>Pack:</strong> ${escapeHTML(mode.version)}<br>` +
+        `<strong>Evidence:</strong> <a href="${escapeHTML(mode.source.url)}" target="_blank" rel="noopener">${escapeHTML(mode.source.label)}</a>${derivation}`;
+    }
+
+    function renderQuestion(session) {
+      activeSession = session;
+      $("drill-setup").classList.add("hidden");
+      $("drill-run").classList.remove("hidden");
+      $("drill-feedback").classList.add("hidden");
+      $("drill-next").classList.add("hidden");
+      document.querySelectorAll("[data-drill-action]").forEach((button) => { button.disabled = false; });
+      $("drill-progress-label").textContent = session.completed
+        ? "Complete" : `Decision ${session.next_index + 1} of ${session.question_count}`;
+      $("drill-score").textContent = `Score ${session.correct_count}/${session.next_index}`;
+      if (session.completed) {
+        $("drill-question").innerHTML = `<h3>Drill complete</h3><div class="drill-hand">${session.correct_count}/${session.question_count}</div>` +
+          `<p>Review mixed boundaries as acceptable alternatives rather than pretending one action has an exact universal frequency.</p>`;
+        document.querySelector(".drill-actions").classList.add("hidden");
+        $("drill-next").textContent = "Choose another mode";
+        $("drill-next").classList.remove("hidden");
+        pendingNext = () => {
+          activeSession = null;
+          pendingNext = null;
+          $("drill-run").classList.add("hidden");
+          $("drill-setup").classList.remove("hidden");
+          $("drill-next").classList.add("hidden");
+          $("drill-next").textContent = "Next decision";
+          renderSource();
+        };
+        return;
+      }
+      document.querySelector(".drill-actions").classList.remove("hidden");
+      const q = session.current_question;
+      $("drill-question").innerHTML = `<div class="muted tiny">${escapeHTML(q.node)} · ${escapeHTML(q.position)} · action folds to you</div>` +
+        `<div class="drill-hand">${escapeHTML(q.hand)}</div><p>${escapeHTML(q.prompt)}</p>`;
+    }
+
+    try {
+      modes = await api("/api/drills/modes");
+      select.innerHTML = modes.map((mode) => `<option value="${mode.id}">${escapeHTML(mode.title)}</option>`).join("");
+      select.onchange = renderSource;
+      renderSource();
+    } catch (e) {
+      error.textContent = e.message; error.classList.remove("hidden"); return;
+    }
+
+    $("drill-start").onclick = async () => {
+      try {
+        renderQuestion(await api("/api/drills/sessions", {
+          method: "POST", body: JSON.stringify({ pack_id: select.value }),
+        }));
+      } catch (e) { error.textContent = e.message; error.classList.remove("hidden"); }
+    };
+
+    document.querySelectorAll("[data-drill-action]").forEach((button) => {
+      button.onclick = async () => {
+        if (!activeSession || activeSession.completed) return;
+        document.querySelectorAll("[data-drill-action]").forEach((item) => { item.disabled = true; });
+        try {
+          const result = await api(`/api/drills/sessions/${activeSession.session_id}/answers`, {
+            method: "POST",
+            body: JSON.stringify({ question_index: activeSession.next_index, action: button.dataset.drillAction }),
+          });
+          const feedback = $("drill-feedback");
+          feedback.className = `drill-feedback ${result.correct ? "correct" : "incorrect"}`;
+          feedback.innerHTML = `<strong>${result.correct ? "Supported by the chart" : "Outside this chart node"}</strong><br>` +
+            `${escapeHTML(result.explanation)}<br><span class="muted tiny">Evidence: ${escapeHTML(result.evidence_source.label)} · ${escapeHTML(result.evidence_source.version)}</span>`;
+          feedback.classList.remove("hidden");
+          $("drill-next").classList.remove("hidden");
+          pendingNext = () => renderQuestion(result.session);
+        } catch (e) { error.textContent = e.message; error.classList.remove("hidden"); }
+      };
+    });
+    $("drill-next").onclick = () => { if (pendingNext) pendingNext(); };
   }
 
   // ---------- coaching profile (Phase 5+6) ----------
@@ -748,11 +935,127 @@
     const dirGlyph = trend.direction === "up" ? "▲" : trend.direction === "down" ? "▼" : "―";
     const series = trend.series || [];
     const latest = series.length ? series[series.length - 1] : null;
-    const latestText = latest ? `${latest.value}${typeof latest.value === "number" && latest.value <= 100 && name !== "aggression_factor" ? "%" : ""}` : "—";
+    const latestText = latest
+      ? latest.infinite
+        ? "∞"
+        : latest.value === null || latest.value === undefined
+          ? "—"
+          : `${latest.value}${typeof latest.value === "number" && latest.value <= 100 && name !== "aggression_factor" ? "%" : ""}`
+      : "—";
     return `<div class="coaching-trend-row">
       <span>${titleCase(name.replace(/_/g, " "))}</span>
       <span><span class="coaching-trend-dir ${trend.direction}">${dirGlyph}</span> ${latestText}</span>
     </div>`;
+  }
+
+  let _coachingScope = "cash_6max_100bb";
+  let _historyEvalPollTimer = null;
+
+  function historyMetricNode(display, metric) {
+    if (!display) return {};
+    if (metric.startsWith("fold_to_cbet_")) return ((display.fold_to_cbet || {})[metric.replace("fold_to_cbet_", "")]) || {};
+    if (metric.startsWith("cbet_")) return ((display.cbet || {})[metric.replace("cbet_", "")]) || {};
+    return display[metric] || {};
+  }
+
+  function historyMetricValue(node) {
+    if (node.infinite) return "∞";
+    if (node.gap_pct !== undefined && node.gap_pct !== null) {
+      const sign = node.gap_pct > 0 ? "+" : "";
+      return `${sign}${node.gap_pct}pp (EP ${node.ep_n}/${node.ep_d}, LP ${node.lp_n}/${node.lp_d})`;
+    }
+    if (node.ratio !== undefined && node.ratio !== null) return `${node.ratio} (${node.n}/${node.d})`;
+    if (node.pct !== undefined) {
+      return node.pct === null ? `— (${node.n}/${node.d})` : `${node.pct}% (${node.n}/${node.d})`;
+    }
+    return "—";
+  }
+
+  function renderHistoryEvaluation(full) {
+    const target = document.getElementById("history-eval-report");
+    if (!target) return;
+    const snapshots = full.stats_snapshot || {};
+    const rolling = snapshots.rolling_500 || {};
+    const latest = snapshots.latest_game || {};
+    const baseline = snapshots.prior_500_baseline || {};
+    const windowMeta = snapshots.window || {};
+    const comparisons = (((full.trend_comparison || {}).latest_game_vs_prior_500) || []);
+    const comparisonByMetric = Object.fromEntries(comparisons.map((item) => [item.metric, item]));
+    const readiness = ((full.sample_status || {}).metrics || []);
+    const rows = readiness.map((sample) => {
+      const comparison = comparisonByMetric[sample.metric] || {};
+      const trend = comparison.trend_status || "insufficient_sample";
+      const latestNode = comparison.current || historyMetricNode(latest, sample.metric);
+      const baselineNode = comparison.baseline || historyMetricNode(baseline, sample.metric);
+      const rollingNode = sample.snapshot || historyMetricNode(rolling, sample.metric);
+      return `<tr>
+        <td>${escapeHTML(titleCase(sample.metric.replace(/_/g, " ")))}</td>
+        <td>${historyMetricValue(latestNode)}</td>
+        <td>${historyMetricValue(baselineNode)}</td>
+        <td>${historyMetricValue(rollingNode)}</td>
+        <td>${sample.observed}/${sample.required}</td>
+        <td class="history-trend ${trend}">${escapeHTML(titleCase(trend.replace(/_/g, " ")))}</td>
+      </tr>`;
+    }).join("");
+    const leaks = full.deterministic_stat_leaks || [];
+    const leakHTML = leaks.length
+      ? `<div class="history-numeric-leaks">${leaks.map((leak) =>
+          `<span class="eval-tag">${escapeHTML(titleCase(leak.tag.replace(/_/g, " ")))}</span>`).join("")}</div>`
+      : `<p class="muted tiny">No rolling numeric leaks passed both threshold and sample requirements.</p>`;
+    target.innerHTML = `
+      <div class="history-window-meta tiny">
+        Scope: ${escapeHTML(full.scope)} · ${windowMeta.hands_used || 0} rolling hands across ${full.games_included || 0} games ·
+        latest game ${windowMeta.latest_game_hands || 0} hands · prior baseline ${windowMeta.prior_baseline_hands || 0} hands ·
+        thresholds ${escapeHTML(full.threshold_profile)} ${escapeHTML(full.threshold_version)}
+      </div>
+      <div class="history-report-summary">${escapeHTML((full.report || {}).summary || "")}</div>
+      ${leakHTML}
+      <table class="history-eval-table">
+        <thead><tr><th>Metric</th><th>Latest game</th><th>Prior 500</th><th>Rolling 500</th><th>Sample</th><th>Trend</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  async function loadLatestHistoryEvaluation(scope) {
+    const statusEl = document.getElementById("history-eval-status");
+    const reportEl = document.getElementById("history-eval-report");
+    if (!statusEl || !reportEl) return;
+    try {
+      const rows = await api(`/api/profile/history-evaluations?scope=${encodeURIComponent(scope)}`);
+      if (!rows.length) {
+        statusEl.textContent = "No rolling history evaluation yet for this profile.";
+        reportEl.innerHTML = "";
+        return;
+      }
+      const latest = rows[0];
+      statusEl.textContent = `Latest history evaluation: ${latest.status} · ${fmtDate(latest.created_at)}`;
+      if (latest.status === "COMPLETED") {
+        renderHistoryEvaluation(await api(`/api/profile/history-evaluations/${latest.evaluation_id}`));
+      } else if (latest.status === "FAILED") {
+        const full = await api(`/api/profile/history-evaluations/${latest.evaluation_id}`);
+        reportEl.innerHTML = `<p class="error">${escapeHTML(full.error || "History evaluation failed.")}</p>`;
+      }
+    } catch (e) {
+      statusEl.textContent = "Could not load history evaluation: " + e.message;
+    }
+  }
+
+  function pollHistoryEvaluation(evaluationId, scope) {
+    if (_historyEvalPollTimer) clearInterval(_historyEvalPollTimer);
+    const poll = async () => {
+      const statusEl = document.getElementById("history-eval-status");
+      if (!statusEl) { clearInterval(_historyEvalPollTimer); return; }
+      try {
+        const result = await api(`/api/profile/history-evaluations/${evaluationId}/status`);
+        statusEl.textContent = `History evaluation: ${result.status}`;
+        if (result.status === "COMPLETED" || result.status === "FAILED") {
+          clearInterval(_historyEvalPollTimer); _historyEvalPollTimer = null;
+          await loadLatestHistoryEvaluation(scope);
+        }
+      } catch (e) { statusEl.textContent = "Could not poll history evaluation: " + e.message; }
+    };
+    poll();
+    _historyEvalPollTimer = setInterval(poll, 2000);
   }
 
   async function showProfileCoaching() {
@@ -762,13 +1065,24 @@
     $("coaching-back").onclick = () => (location.hash = "#/history");
 
     let profile;
-    try { profile = await api("/api/profile/coaching"); }
+    try { profile = await api(`/api/profile/coaching?scope=${encodeURIComponent(_coachingScope)}`); }
     catch (e) {
       $("coaching-count").textContent = "Could not load coaching profile: " + e.message;
       return;
     }
 
-    $("coaching-count").textContent = `${profile.evaluations_folded} evaluation${profile.evaluations_folded === 1 ? "" : "s"} folded in`;
+    const scopeSelect = $("coaching-scope");
+    scopeSelect.innerHTML = (profile.available_scopes || [])
+      .map((item) => `<option value="${item.key}">${item.label}</option>`)
+      .join("");
+    scopeSelect.value = profile.scope;
+    scopeSelect.onchange = () => {
+      if (_historyEvalPollTimer) { clearInterval(_historyEvalPollTimer); _historyEvalPollTimer = null; }
+      _coachingScope = scopeSelect.value;
+      showProfileCoaching();
+    };
+
+    $("coaching-count").textContent = `${profile.evaluations_folded} evaluation${profile.evaluations_folded === 1 ? "" : "s"} folded into ${profile.scope_label}`;
     $("coaching-summary").innerHTML = profile.playstyle_summary
       ? `<div class="coaching-summary">${profile.playstyle_summary}</div>`
       : `<p class="muted tiny">No playstyle summary yet — evaluate a few games to build your profile.</p>`;
@@ -789,10 +1103,25 @@
       ? resolved.map(leakCardHTML).join("")
       : `<p class="muted tiny">Nothing resolved yet.</p>`;
 
-    $("coaching-reset-btn").onclick = async () => {
-      if (!confirm("Reset your coaching profile? Active leaks and trends will be cleared — future evaluations start fresh. Past game reports are unaffected.")) return;
+    $("evaluate-history-btn").onclick = async () => {
+      const btn = $("evaluate-history-btn");
+      btn.disabled = true;
       try {
-        await api("/api/profile/reset", { method: "POST" });
+        const result = await api("/api/profile/history-evaluations", {
+          method: "POST",
+          body: JSON.stringify({ scope: profile.scope, window_hands: 500, latest_game_id: null }),
+        });
+        pollHistoryEvaluation(result.evaluation_id, profile.scope);
+      } catch (e) {
+        $("history-eval-status").textContent = "Could not start history evaluation: " + e.message;
+      } finally { btn.disabled = false; }
+    };
+    loadLatestHistoryEvaluation(profile.scope);
+
+    $("coaching-reset-btn").onclick = async () => {
+      if (!confirm(`Reset the ${profile.scope_label} coaching profile? Other training profiles and past game reports are unaffected.`)) return;
+      try {
+        await api(`/api/profile/reset?scope=${encodeURIComponent(profile.scope)}`, { method: "POST" });
         showProfileCoaching();
       } catch (e) {
         alert("Could not reset profile: " + e.message);
@@ -998,6 +1327,7 @@
     const hash = location.hash || (state.user ? "#/" : "#/login");
     if (hash.startsWith("#/table/")) return showTable(hash.slice("#/table/".length));
     if (hash === "#/create") return showCreate();
+    if (hash === "#/drills") return showDrills();
     if (hash === "#/profile") return showProfile();
     if (hash === "#/profile/coaching") return showProfileCoaching();
     if (hash === "#/history") return showHistory();

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Poker Trainer</title>
-  <link rel="stylesheet" href="/static/css/styles.css" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=9" />
 </head>
 <body>
   <div id="app"></div>
@@ -50,6 +50,7 @@
       <div class="main-body">
         <div class="hero-actions">
           <button id="go-create" class="btn primary big">+ Create new game</button>
+          <button id="go-drills" class="btn warn big">Decision drills</button>
           <button id="go-history" class="btn ghost big">Game history</button>
         </div>
         <div class="card-panel">
@@ -67,7 +68,7 @@
             <span id="profile-name" class="profile-name-text">Guest</span>
           </div>
           <div class="row">
-            <button id="go-profile" class="btn ghost">Edit profile</button>
+            <button id="go-profile" class="btn ghost">Settings</button>
             <button id="logout-btn" class="btn ghost">Log out</button>
           </div>
         </div>
@@ -82,6 +83,23 @@
       </header>
       <div class="main-body">
         <div class="card-panel form-grid">
+          <label>Training scenario
+            <select id="cfg-scenario">
+              <option value="cash_6max_100bb">现金桌 6-max，100BB</option>
+              <option value="cash_8max_100bb">现金桌 8-max，100BB</option>
+              <option value="mtt_8max_40bb">MTT 8-max 常规，40BB + BB Ante</option>
+              <option value="mtt_8max_25bb">MTT 8-max 中短码，25BB + BB Ante</option>
+              <option value="mtt_8max_15bb">MTT 8-max Push/Fold，10–15BB + BB Ante</option>
+              <option value="custom">自定义模式</option>
+            </select>
+          </label>
+          <p id="cfg-scenario-description" class="muted tiny"></p>
+          <label>Game format
+            <select id="cfg-format">
+              <option value="cash">Cash</option>
+              <option value="tournament">Tournament</option>
+            </select>
+          </label>
           <label>Bot players
             <input id="cfg-bots" type="number" min="1" max="8" value="6" />
           </label>
@@ -93,6 +111,15 @@
           </label>
           <label>Big blind
             <input id="cfg-bb" type="number" min="2" value="100" />
+          </label>
+          <label>Ante type
+            <select id="cfg-ante-type">
+              <option value="none">None</option>
+              <option value="big_blind">Big Blind Ante</option>
+            </select>
+          </label>
+          <label>Ante
+            <input id="cfg-ante" type="number" min="0" value="0" />
           </label>
           <label>Max hands
             <input id="cfg-rounds" type="number" min="1" max="500" value="50" />
@@ -108,20 +135,6 @@
           <div id="styles-picker" class="styles-picker hidden">
             <p class="muted tiny">Choose a style per bot (used when not randomizing):</p>
             <div id="styles-rows"></div>
-          </div>
-          <div class="quick-config">
-            <div class="quick-config-head">
-              <span>Pre-flop quick bets <span class="muted tiny">(× big blind, up to 5)</span></span>
-              <button id="preflop-add" type="button" class="btn tiny ghost">+ Add</button>
-            </div>
-            <div id="preflop-rows" class="quick-chips"></div>
-          </div>
-          <div class="quick-config">
-            <div class="quick-config-head">
-              <span>Post-flop quick bets <span class="muted tiny">(% pot, up to 5)</span></span>
-              <button id="postflop-add" type="button" class="btn tiny ghost">+ Add</button>
-            </div>
-            <div id="postflop-rows" class="quick-chips"></div>
           </div>
           <div class="row">
             <button id="create-start" class="btn primary big">Start game</button>
@@ -139,6 +152,7 @@
       </header>
       <div class="main-body">
         <div class="card-panel">
+          <h2>Account settings</h2>
           <div class="profile-head">
             <img id="pf-avatar" class="avatar lg" alt="" />
             <div>
@@ -169,6 +183,24 @@
               <input id="pf-avatar-url" type="text" maxlength="1000" />
             </label>
           </div>
+          <div class="settings-section">
+            <h3>Bet shortcuts</h3>
+            <p class="muted tiny">Used for every new game. All-in remains available automatically.</p>
+            <div class="quick-config">
+              <div class="quick-config-head">
+                <span>Pre-flop <span class="muted tiny">(× big blind, up to 5)</span></span>
+                <button id="pf-preflop-add" type="button" class="btn tiny ghost">+ Add</button>
+              </div>
+              <div id="pf-preflop-rows" class="quick-chips"></div>
+            </div>
+            <div class="quick-config">
+              <div class="quick-config-head">
+                <span>Post-flop <span class="muted tiny">(% pot, up to 5)</span></span>
+                <button id="pf-postflop-add" type="button" class="btn tiny ghost">+ Add</button>
+              </div>
+              <div id="pf-postflop-rows" class="quick-chips"></div>
+            </div>
+          </div>
           <p id="pf-error" class="error hidden"></p>
           <p id="pf-saved" class="tiny hidden" style="color:#5fbf6f">Saved ✓</p>
           <div class="row">
@@ -178,6 +210,39 @@
           <div class="row" style="margin-top: 0.8rem">
             <button id="pf-go-coaching" class="btn ghost">View coaching profile</button>
           </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="screen-drills">
+    <section class="screen">
+      <header class="topbar">
+        <button id="drills-back" class="topbar-home">♠ Poker Trainer</button>
+      </header>
+      <div class="main-body">
+        <div class="card-panel drill-panel">
+          <h2>Preflop boundary drill</h2>
+          <p class="muted">Ten controlled RFI decisions from one versioned range pack—not a random dealt game.</p>
+          <div id="drill-setup">
+            <label>Game mode
+              <select id="drill-mode"></select>
+            </label>
+            <div id="drill-source" class="drill-source muted tiny"></div>
+            <button id="drill-start" class="btn primary big">Start 10 decisions</button>
+          </div>
+          <div id="drill-run" class="hidden">
+            <div class="drill-progress"><span id="drill-progress-label"></span><span id="drill-score"></span></div>
+            <div id="drill-question" class="drill-question"></div>
+            <div class="drill-actions">
+              <button class="btn ghost" data-drill-action="fold">Fold</button>
+              <button class="btn ghost" data-drill-action="limp">Limp</button>
+              <button class="btn warn" data-drill-action="raise">Raise</button>
+            </div>
+            <div id="drill-feedback" class="drill-feedback hidden"></div>
+            <button id="drill-next" class="btn primary hidden">Next decision</button>
+          </div>
+          <p id="drill-error" class="error hidden"></p>
         </div>
       </div>
     </section>
@@ -260,8 +325,23 @@
       <div class="main-body">
         <div class="card-panel">
           <h2>Coaching Profile</h2>
+          <label>Training profile
+            <select id="coaching-scope"></select>
+          </label>
           <p id="coaching-count" class="muted tiny"></p>
           <div id="coaching-summary"></div>
+
+          <div class="history-eval-panel">
+            <div class="history-eval-head">
+              <div>
+                <h3>Rolling history evaluation</h3>
+                <p class="muted tiny">Deterministic statistics from the latest 500 saved hands in this training profile.</p>
+              </div>
+              <button id="evaluate-history-btn" class="btn primary">Evaluate History</button>
+            </div>
+            <div id="history-eval-status" class="muted tiny"></div>
+            <div id="history-eval-report"></div>
+          </div>
 
           <h3 class="coaching-section-title">Trends</h3>
           <div id="coaching-trends"></div>
@@ -296,14 +376,17 @@
 
       <div class="table-layout">
         <div class="felt-wrap">
-          <div id="felt" class="felt">
-            <div id="community" class="community"></div>
-            <div id="pot" class="pot"></div>
-            <div id="seats" class="seats"></div>
-            <div id="message" class="table-message"></div>
+          <div class="felt-stage">
+            <div id="felt" class="felt">
+              <div id="community" class="community"></div>
+              <div id="pot" class="pot"></div>
+              <div id="seats" class="seats"></div>
+              <div id="message" class="table-message"></div>
+            </div>
           </div>
 
           <div id="controls" class="controls hidden">
+            <div id="action-hint" class="action-hint" aria-live="polite"></div>
             <div class="bet-row">
               <input id="bet-slider" type="range" min="0" max="0" value="0" disabled />
               <input id="bet-input" type="number" min="0" max="0" value="0" disabled />
@@ -345,7 +428,7 @@
     </section>
   </template>
 
-  <script src="/static/js/table.js?v=5"></script>
-  <script src="/static/js/app.js?v=6"></script>
+  <script src="/static/js/table.js?v=9"></script>
+  <script src="/static/js/app.js?v=9"></script>
 </body>
 </html>

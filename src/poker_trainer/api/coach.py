@@ -28,10 +28,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_functions.coach_engine.engine import (
+    build_scenario_context,
     chat,
     get_or_create_conversation,
 )
-from poker_engine.db.models import Conversation
+from poker_engine.db.models import Conversation, Game
 from poker_trainer.auth.deps import get_db, require_user
 from poker_engine.db.models import User
 from poker_trainer.game.manager import manager
@@ -150,13 +151,26 @@ async def coach_chat(
     )
 
     live_context: str | None = None
+    scenario_context: str | None = None
     if body.game_id is not None:
         session = manager.get(str(body.game_id))
         if session is not None:
-            round_state = session.current_round_state()
+            scenario_context = build_scenario_context(session.config)
+            round_state = session.current_round_state(for_coach=True)
             if round_state is not None:
                 table_text = format_table(round_state, session.hero_uuid)
-                live_context = f"Current table state:\n\n{table_text}"
+                live_context = (
+                    "Decision Snapshot (current state; no future actions or run-out):\n\n"
+                    f"{table_text}"
+                )
+        else:
+            game = db.get(Game, body.game_id)
+            if game is not None and game.hero_user_id == user.id:
+                scenario_context = build_scenario_context(game)
+    elif conv.game_id is not None:
+        game = db.get(Game, conv.game_id)
+        if game is not None and game.hero_user_id == user.id:
+            scenario_context = build_scenario_context(game)
 
     async def event_stream() -> AsyncIterator[str]:
         try:
@@ -166,7 +180,15 @@ async def coach_chat(
                 coach_scenario = "in_game"
             else:
                 coach_scenario = "generic"
-            generator = await chat(db, conv.id, body.message, live_context, conv_pair=3, coach_scenario=coach_scenario)
+            generator = await chat(
+                db,
+                conv.id,
+                body.message,
+                live_context,
+                conv_pair=3,
+                coach_scenario=coach_scenario,
+                scenario_context=scenario_context,
+            )
             async for chunk in generator:
                 payload = json.dumps({"type": "chunk", "text": chunk})
                 yield f"data: {payload}\n\n"

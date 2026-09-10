@@ -53,10 +53,10 @@ async def _run_tool_loop_executes_tool_and_returns_history():
 
     result = await run_tool_loop(
         messages=messages,
-        model="gpt-5-mini",
+        model="gpt-5.4",
         tools=[EQUITY_CALCULATOR_SCHEMA],
         executors=executors,
-        temperature=1,  # gpt-5-mini only supports the default temperature
+        temperature=1,  # Ignored by the wrapper for reasoning models.
     )
 
     assert result.final_text

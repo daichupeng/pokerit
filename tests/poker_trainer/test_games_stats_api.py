@@ -59,6 +59,6 @@ def test_game_stats_200_for_owner(db_session):
         assert resp.status_code == 200
         body = resp.json()
         assert body["hands_dealt"] == 0
-        assert body["vpip"] == {"pct": 0.0, "n": 0, "d": 0}
+        assert body["vpip"] == {"pct": None, "n": 0, "d": 0}
     finally:
         app.dependency_overrides.clear()

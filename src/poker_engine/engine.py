@@ -111,8 +111,8 @@ class GameEngine:
 
             state = NoLimitTexasHoldem.create_state(
                 automations=_AUTOMATIONS,
-                ante_trimming_status=True,
-                raw_antes=config.ante,
+                ante_trimming_status=config.ante_trimming_status,
+                raw_antes=config.raw_antes(n),
                 raw_blinds_or_straddles=(config.small_blind, config.big_blind),
                 min_bet=config.big_blind,
                 raw_starting_stacks=rotated,

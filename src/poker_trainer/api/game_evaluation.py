@@ -14,11 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from poker_engine.db.models import EvaluationStatus, GameEvaluation, User
+from poker_engine.scenarios import profile_scope_for_game
 from poker_trainer.api.games import _load_owned_game
 from poker_trainer.auth.deps import get_db, require_user
 from poker_trainer.jobs import get_redis_pool
 
 from ai_functions.memory.persistence import rebuild_and_persist
+from ai_functions.game_review.synthesis import normalize_report_evidence
 
 router = APIRouter(prefix="/api", tags=["game-evaluation"])
 
@@ -100,7 +102,9 @@ def get_evaluation(
         "error": evaluation.error,
         "stats_snapshot": evaluation.stats_snapshot,
         "leak_tags": evaluation.leak_tags,
-        "report": evaluation.report,
+        # Old reports are immutable snapshots, but deterministic evidence
+        # wording can still be corrected safely at presentation time.
+        "report": normalize_report_evidence(evaluation.report),
         "model_versions": evaluation.model_versions,
         "discarded_at": evaluation.discarded_at.isoformat() if evaluation.discarded_at else None,
         "disputed_tags": evaluation.disputed_tags or [],
@@ -135,7 +139,9 @@ async def discard_evaluation(
     evaluation = _load_owned_evaluation(db, game_id, eval_id, user)
     evaluation.discarded_at = _now()
     db.commit()
-    await rebuild_and_persist(db, user.id)
+    await rebuild_and_persist(
+        db, user.id, scope_key=profile_scope_for_game(evaluation.game)
+    )
     return {"discarded_at": evaluation.discarded_at.isoformat()}
 
 
@@ -149,7 +155,9 @@ async def restore_evaluation(
     evaluation = _load_owned_evaluation(db, game_id, eval_id, user)
     evaluation.discarded_at = None
     db.commit()
-    await rebuild_and_persist(db, user.id)
+    await rebuild_and_persist(
+        db, user.id, scope_key=profile_scope_for_game(evaluation.game)
+    )
     return {"discarded_at": None}
 
 
@@ -174,7 +182,9 @@ async def dispute_evaluation_tags(
         disputed -= set(body.tags)
     evaluation.disputed_tags = sorted(disputed)
     db.commit()
-    await rebuild_and_persist(db, user.id)
+    await rebuild_and_persist(
+        db, user.id, scope_key=profile_scope_for_game(evaluation.game)
+    )
     return {"disputed_tags": evaluation.disputed_tags}
 
 

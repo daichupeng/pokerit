@@ -57,6 +57,11 @@ class GameConfig:
     seats: list[SeatSpec]
     max_round: int = 20
     ante: int = 0
+    ante_type: str = "none"
+    game_format: str = "cash"
+    scenario: str = "custom"
+    tournament_stage: str | None = None
+    profile_scope: str = "cash_6max_100bb"
 
     @property
     def big_blind(self) -> int:
@@ -72,6 +77,14 @@ class GameConfig:
             raise ValueError("buy_in must be positive.")
         if self.ante < 0:
             raise ValueError("ante cannot be negative.")
+        if self.ante_type not in {"none", "big_blind"}:
+            raise ValueError("ante_type must be 'none' or 'big_blind'.")
+        if self.ante_type == "none" and self.ante != 0:
+            raise ValueError("ante must be 0 when ante_type is 'none'.")
+        if self.ante_type == "big_blind" and self.ante <= 0:
+            raise ValueError("a big-blind ante must be positive.")
+        if self.game_format not in {"cash", "tournament"}:
+            raise ValueError("game_format must be 'cash' or 'tournament'.")
         human_seats = [s for s in self.seats if not s.is_bot]
         if len(human_seats) > 1:
             raise ValueError("This step supports at most one human seat.")
@@ -86,3 +99,16 @@ class GameConfig:
             if not seat.is_bot:
                 return seat
         return None
+
+    def raw_antes(self, player_count: int):
+        """PokerKit ante input for the current SB-first seat ordering."""
+        if self.ante_type == "big_blind" and self.ante > 0:
+            # GameSession rotates PokerKit seats so SB=0 and BB=1.
+            return tuple([0, self.ante] + [0] * max(0, player_count - 2))
+        return 0
+
+    @property
+    def ante_trimming_status(self) -> bool:
+        # PokerKit's trimming mode offsets a player's ante against their blind.
+        # A BB ante is additional dead money, so it must not be trimmed.
+        return self.ante_type != "big_blind"

@@ -14,9 +14,19 @@ from poker_engine.bots.styles import STYLE_REGISTRY
 from poker_engine.bots.llm_styles import LLM_STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind, SeatSpec
 from poker_engine.db.models import Game, GamePlayer, Hand, User
+from poker_engine.scenarios import (
+    CUSTOM_SCENARIO,
+    SCENARIO_PRESETS,
+    get_scenario_preset,
+    profile_scope_for_settings,
+)
 from poker_trainer.auth.deps import get_db, require_user
 from poker_trainer.game.manager import manager
 from poker_trainer.game.session import GameSession
+from poker_trainer.preferences import (
+    bet_shortcuts_from_preferences,
+    validate_quick_sizes,
+)
 
 router = APIRouter(prefix="/api", tags=["games"])
 
@@ -27,6 +37,12 @@ BOT_STYLES = [SeatKind(v) for v in list(STYLE_REGISTRY) + list(LLM_STYLE_REGISTR
 def list_bot_styles() -> list[dict]:
     """Return all available bot styles for the game setup UI."""
     return [{"value": kind.value, "label": kind.value} for kind in BOT_STYLES]
+
+
+@router.get("/game-scenarios")
+def list_game_scenarios() -> list[dict]:
+    """Preset configurations consumed by the create-game screen."""
+    return [preset.to_public_dict() for preset in SCENARIO_PRESETS.values()]
 
 
 # Bot names are "Adjective Noun" pairs drawn from these 30×30 = 900 combos,
@@ -60,17 +76,17 @@ def _random_bot_names(count: int, rng: random.Random) -> list[str]:
     combos = [f"{a}{s}{n}" for a in _BOT_ADJECTIVES for n in _BOT_NOUNS for s in ("_", "-",".")]
     return rng.sample(combos, min(count, len(combos)))
 
-# Default quick-bet presets. Preflop sizing is in big blinds; postflop in % pot.
-DEFAULT_PREFLOP_QUICK = [2.0, 2.5, 3.5, 4.5]   # × BB
-DEFAULT_POSTFLOP_QUICK = [33.0, 50.0, 60.0, 100.0]  # % pot
-
-
 class CreateGameRequest(BaseModel):
     num_bots: int = Field(default=8, ge=1, le=8)
     small_blind: int = Field(default=50, ge=1)
     big_blind: int = Field(default=100, ge=2)
     buy_in: int = Field(default=10000, ge=1)
     max_round: int = Field(default=50, ge=1, le=500)
+    scenario: str = CUSTOM_SCENARIO
+    game_format: str = "cash"
+    ante: int = Field(default=0, ge=0)
+    ante_type: str = "none"
+    tournament_stage: str | None = None
     randomize_styles: bool = True
     hide_styles: bool = True
     # Optional explicit per-bot styles (used when randomize_styles is False).
@@ -78,8 +94,8 @@ class CreateGameRequest(BaseModel):
     # The hero is the logged-in user; identity is taken from the session, not
     # from the client. (hero_name/hero_email request fields removed.)
     seed: int | None = None
-    # Quick-bet presets (besides All-in), up to 5 each. Preflop values are
-    # big-blind multiples; postflop values are pot percentages.
+    # Legacy per-game overrides remain accepted for older clients. The SPA now
+    # manages these account-wide under Settings.
     preflop_quick: list[float] | None = None
     postflop_quick: list[float] | None = None
 
@@ -88,6 +104,8 @@ class CreateGameResponse(BaseModel):
     game_id: str
     ws_url: str
     num_seats: int
+    scenario: str
+    profile_scope: str
 
 
 class GameSummary(BaseModel):
@@ -97,9 +115,15 @@ class GameSummary(BaseModel):
     big_blind: int
     num_hands: int
     hero_net: int  # the hero seat's net chips across the game
+    game_format: str
+    scenario: str
+    starting_stack_bb: float
+    ante: int
+    ante_type: str
+    profile_scope: str
 
 
-def _build_seats(req: CreateGameRequest, hero: User) -> list[SeatSpec]:
+def _build_seats(req: CreateGameRequest, hero: User, num_bots: int | None = None) -> list[SeatSpec]:
     # The hero seat is the logged-in user; the recorder links the game to this
     # account by email.
     hero_name = hero.username or hero.display_name or "you"
@@ -107,8 +131,9 @@ def _build_seats(req: CreateGameRequest, hero: User) -> list[SeatSpec]:
         SeatSpec(name=hero_name, kind=SeatKind.HUMAN, email=hero.email)
     ]
     rng = random.Random(req.seed)
-    names = _random_bot_names(req.num_bots, rng)
-    for i in range(req.num_bots):
+    num_bots = req.num_bots if num_bots is None else num_bots
+    names = _random_bot_names(num_bots, rng)
+    for i in range(num_bots):
         if req.randomize_styles or not req.styles:
             kind = rng.choice(BOT_STYLES)
         else:
@@ -126,27 +151,63 @@ def _build_seats(req: CreateGameRequest, hero: User) -> list[SeatSpec]:
 
 @router.post("/games", response_model=CreateGameResponse)
 def create_game(req: CreateGameRequest, hero: User = Depends(require_user)) -> CreateGameResponse:
-    if req.big_blind != req.small_blind * 2:
+    if req.scenario == CUSTOM_SCENARIO:
+        settings = {
+            "scenario": CUSTOM_SCENARIO,
+            "game_format": req.game_format,
+            "num_bots": req.num_bots,
+            "small_blind": req.small_blind,
+            "big_blind": req.big_blind,
+            "buy_in": req.buy_in,
+            "ante": req.ante,
+            "ante_type": req.ante_type,
+            "tournament_stage": req.tournament_stage,
+        }
+    else:
+        preset = get_scenario_preset(req.scenario)
+        if preset is None:
+            raise HTTPException(400, f"Unknown training scenario: {req.scenario!r}")
+        settings = {**preset.to_public_dict(), "scenario": preset.key}
+
+    if settings["big_blind"] != settings["small_blind"] * 2:
         # The engine derives BB as 2*SB; keep the contract explicit.
         raise HTTPException(400, "big_blind must equal 2 × small_blind.")
-    seats = _build_seats(req, hero)
+    profile_scope = profile_scope_for_settings(
+        game_format=settings["game_format"],
+        buy_in=settings["buy_in"],
+        big_blind=settings["big_blind"],
+        scenario=settings["scenario"],
+    )
+    seats = _build_seats(req, hero, settings["num_bots"])
     config = GameConfig(
-        small_blind=req.small_blind,
-        buy_in=req.buy_in,
+        small_blind=settings["small_blind"],
+        buy_in=settings["buy_in"],
         seats=seats,
         max_round=req.max_round,
+        ante=settings["ante"],
+        ante_type=settings["ante_type"],
+        game_format=settings["game_format"],
+        scenario=settings["scenario"],
+        tournament_stage=settings["tournament_stage"],
+        profile_scope=profile_scope,
     )
     try:
         config.validate()
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
-    preflop = req.preflop_quick if req.preflop_quick is not None else DEFAULT_PREFLOP_QUICK
-    postflop = req.postflop_quick if req.postflop_quick is not None else DEFAULT_POSTFLOP_QUICK
-    if len(preflop) > 5 or len(postflop) > 5:
-        raise HTTPException(400, "At most 5 quick-bet presets per street are allowed.")
-    preflop = [v for v in preflop if v > 0]
-    postflop = [v for v in postflop if v > 0]
+    saved_preflop, saved_postflop = bet_shortcuts_from_preferences(hero.preferences)
+    try:
+        preflop = (
+            validate_quick_sizes(req.preflop_quick, field="preflop")
+            if req.preflop_quick is not None else saved_preflop
+        )
+        postflop = (
+            validate_quick_sizes(req.postflop_quick, field="postflop")
+            if req.postflop_quick is not None else saved_postflop
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     session = GameSession(config, hero_index=0, seed=req.seed)
     session.preflop_quick = preflop
@@ -156,6 +217,8 @@ def create_game(req: CreateGameRequest, hero: User = Depends(require_user)) -> C
         game_id=session.game_id,
         ws_url=f"/ws/games/{session.game_id}",
         num_seats=len(seats),
+        scenario=config.scenario,
+        profile_scope=config.profile_scope,
     )
 
 
@@ -216,6 +279,12 @@ def list_games(
                 big_blind=game.big_blind,
                 num_hands=len(game.hands),
                 hero_net=hero.total_winnings if hero else 0,
+                game_format=game.game_format,
+                scenario=game.scenario,
+                starting_stack_bb=round(game.buy_in / game.big_blind, 1),
+                ante=game.ante,
+                ante_type=game.ante_type,
+                profile_scope=game.profile_scope,
             )
         )
     return out
@@ -245,6 +314,7 @@ def list_hands(
         rows.append({
             "hand_id": str(hand.id),
             "round_count": hand.round_count,
+            "active_player_count": hand.active_player_count,
             "street_reached": hand.street_reached.value,
             "board": list(hand.board or []),
             "pot_total": hand.pot_total,
@@ -257,6 +327,14 @@ def list_hands(
         "game_id": str(game.id),
         "small_blind": game.small_blind,
         "big_blind": game.big_blind,
+        "buy_in": game.buy_in,
+        "starting_stack_bb": round(game.buy_in / game.big_blind, 1),
+        "ante": game.ante,
+        "ante_type": game.ante_type,
+        "game_format": game.game_format,
+        "scenario": game.scenario,
+        "tournament_stage": game.tournament_stage,
+        "profile_scope": game.profile_scope,
         "started_at": game.started_at.isoformat() if game.started_at else None,
         "hands": rows,
     }
@@ -365,6 +443,12 @@ def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
         street_invested: dict = {}
         if st == "preflop":
             gp_by_seat = {gp.seat_index: gp.id for gp in game.players}
+            if game.ante_type == "big_blind" and game.ante and hand.bb_pos is not None:
+                ante_gp_id = gp_by_seat.get(hand.bb_pos)
+                if ante_gp_id and ante_gp_id in current_stacks:
+                    ante_amt = min(game.ante, current_stacks[ante_gp_id])
+                    current_stacks[ante_gp_id] -= ante_amt
+                    chips_added_this_street += ante_amt
             if hand.sb_pos is not None:
                 sb_gp_id = gp_by_seat.get(hand.sb_pos)
                 if sb_gp_id and sb_gp_id in current_stacks:
@@ -416,6 +500,12 @@ def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
                 "position": pos_of(gp_id),
                 "street_bet": street_bet_before,
                 "stack_before": stack_before,
+                "stack_after": act.stack_after,
+                "chips_put_in": chips_put_in if act.stack_after is not None else 0,
+                "pot_before": pot_carried + chips_added_this_street - (
+                    chips_put_in if act.stack_after is not None else 0
+                ),
+                "pot_after": pot_carried + chips_added_this_street,
             })
 
         # Player stacks at the START of this street.
@@ -478,6 +568,9 @@ def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
     return {
         "game_id": str(game.id),
         "round_count": hand.round_count,
+        "active_player_count": hand.active_player_count or sum(
+            1 for hp in hand.players if (hp.starting_stack or 0) > 0
+        ),
         "street_reached": hand.street_reached.value,
         "board": board,
         "pot_total": hand.pot_total,
@@ -534,6 +627,16 @@ def hand_context_text(
         raise HTTPException(404, "Hand not found.")
     detail = hand_detail(game_id, round_count, user, db)
     text = format_hand(detail, game.small_blind, game.big_blind)
+    configured_styles = [
+        f"- {gp.display_name}: {getattr(gp.bot_style, 'value', gp.bot_style)}"
+        for gp in game.players
+        if gp.is_bot and gp.bot_style is not None
+    ]
+    if configured_styles:
+        text += (
+            "\n\nConfigured bot styles (simulation metadata, not solver proof or "
+            "observed population reads):\n" + "\n".join(configured_styles)
+        )
     return {"context": text, "round_count": round_count, "hand_id": str(hand.id)}
 
 

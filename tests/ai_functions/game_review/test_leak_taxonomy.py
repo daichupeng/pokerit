@@ -18,6 +18,7 @@ def _base_display(**overrides):
     display = {
         "vpip": _stat(pct=25, n=25, d=100),
         "pfr": _stat(pct=20, n=20, d=100),
+        "limp": _stat(pct=5, n=5, d=100),
         "three_bet": _stat(pct=7, n=7, d=100),
         "fold_to_3bet": _stat(pct=50, n=5, d=10),
         "wtsd": _stat(pct=27, n=27, d=100),
@@ -82,8 +83,15 @@ def test_min_opportunity_floor_suppresses_tag():
     assert leak_taxonomy.severity_for_stat_tag("low_vpip", display) is None
 
 
+def test_vpip_uses_shared_five_opportunity_floor():
+    display = _base_display(vpip=_stat(pct=10, n=0, d=4))
+    assert leak_taxonomy.severity_for_stat_tag("low_vpip", display) is None
+    display["vpip"] = _stat(pct=10, n=1, d=5)
+    assert leak_taxonomy.severity_for_stat_tag("low_vpip", display)["severity"] == 3
+
+
 def test_too_passive_postflop_uses_ratio_not_pct():
-    display = _base_display(aggression_factor=_stat(ratio=0.5, n=5, d=10))
+    display = _base_display(aggression_factor=_stat(ratio=0.5, n=15, d=10))
     leak = leak_taxonomy.severity_for_stat_tag("too_passive_postflop", display)
     assert leak["severity"] == 3
     assert leak["evidence"]["ratio"] == 0.5
@@ -91,8 +99,7 @@ def test_too_passive_postflop_uses_ratio_not_pct():
 
 def test_limps_too_wide_severe():
     display = _base_display(
-        vpip=_stat(pct=30, n=30, d=100),
-        pfr=_stat(pct=15, n=15, d=100),
+        limp=_stat(pct=15, n=15, d=100),
     )
     leak = leak_taxonomy.severity_for_stat_tag("limps_too_wide", display)
     assert leak["severity"] == 3
@@ -101,8 +108,7 @@ def test_limps_too_wide_severe():
 
 def test_limps_too_wide_none_when_gap_small():
     display = _base_display(
-        vpip=_stat(pct=25, n=25, d=100),
-        pfr=_stat(pct=22, n=22, d=100),
+        limp=_stat(pct=3, n=3, d=100),
     )
     assert leak_taxonomy.severity_for_stat_tag("limps_too_wide", display) is None
 
@@ -179,3 +185,29 @@ def test_stat_tag_opportunity_unknown_tag_raises():
 
     with pytest.raises(ValueError):
         leak_taxonomy.stat_tag_opportunity("not_a_real_tag", _base_display())
+
+
+def test_profiles_have_separate_vpip_thresholds():
+    display = _base_display(vpip=_stat(pct=19, n=19, d=100))
+    assert leak_taxonomy.severity_for_stat_tag("low_vpip", display, "cash_6max_100bb")["severity"] == 2
+    assert leak_taxonomy.severity_for_stat_tag("low_vpip", display, "cash_8max_100bb") is None
+
+
+def test_push_fold_profile_disables_postflop_stat_leaks():
+    display = _base_display(cbet={
+        "flop": _stat(pct=0, n=0, d=100),
+        "turn": _stat(pct=0, n=0, d=100),
+        "river": _stat(pct=0, n=0, d=100),
+    })
+    assert leak_taxonomy.severity_for_stat_tag("under_cbet_flop", display, "mtt_8max_15bb") is None
+
+
+def test_sample_status_marks_unready_metrics_without_a_leak():
+    display = _base_display(vpip=_stat(pct=10, n=0, d=4))
+    status = leak_taxonomy.sample_status(display, "cash_6max_100bb")
+    vpip = next(metric for metric in status["metrics"] if metric["metric"] == "VPIP / PFR")
+    assert vpip == {
+        "metric": "VPIP / PFR", "observed": 4, "required": 5,
+        "status": "insufficient_sample",
+    }
+    assert status["version"] == leak_taxonomy.THRESHOLD_VERSION

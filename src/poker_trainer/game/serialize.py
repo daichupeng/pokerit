@@ -109,6 +109,13 @@ def build_view(
         "next_player": actor_seat,
         "round_count": hand_num,
         "small_blind_amount": config.small_blind,
+        "big_blind_amount": config.big_blind,
+        "ante": config.ante,
+        "ante_type": config.ante_type,
+        "game_format": config.game_format,
+        "scenario": config.scenario,
+        "tournament_stage": config.tournament_stage,
+        "profile_scope": config.profile_scope,
         "seats": seats,
     }
 
@@ -183,6 +190,13 @@ def build_round_state(
         ),
         "round_count": hand_num,
         "small_blind_amount": config.small_blind,
+        "big_blind_amount": config.big_blind,
+        "ante": config.ante,
+        "ante_type": config.ante_type,
+        "game_format": config.game_format,
+        "scenario": config.scenario,
+        "tournament_stage": config.tournament_stage,
+        "profile_scope": config.profile_scope,
         "seats": seats,
         "action_histories": action_histories,
     }

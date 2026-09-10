@@ -13,7 +13,7 @@ from ai_functions.game_review import config
 from shared_services.llm import chat_model_with_usage
 
 MAX_SUMMARY_CHARS = 600
-# Reasoning models (e.g. gpt-5-mini) spend part of this budget on invisible
+# Reasoning models (including gpt-5.4-mini) spend part of this budget on invisible
 # reasoning tokens before emitting visible text — too low a max_tokens here
 # starves the completion entirely (observed: empty response, tokens fully
 # consumed). Matches the budget the street/synthesis stages already use.

@@ -7,12 +7,20 @@ def _cards(codes: list[str]) -> str:
     return " ".join(codes) if codes else ""
 
 
-def _action_line(entry: dict, seat_names: dict[str, str], seat_positions: dict[str, str], hero_uuid: str) -> str:
+def _action_line(
+    entry: dict,
+    seat_names: dict[str, str],
+    seat_positions: dict[str, str],
+    seat_styles: dict[str, str],
+    hero_uuid: str,
+) -> str:
     uuid_ = entry.get("uuid", "")
     is_hero = uuid_ == hero_uuid
     base = "Player" if is_hero else seat_names.get(uuid_, uuid_)
     pos = seat_positions.get(uuid_, "")
     who = f"{base} ({pos})" if pos else base
+    if not is_hero and seat_styles.get(uuid_):
+        who += f" [simulation style: {seat_styles[uuid_]}]"
 
     action = entry.get("action", "").lower()
     amt = entry.get("amount") or 0
@@ -42,7 +50,12 @@ def format_table(round_state: dict, hero_uuid: str) -> str:
     btn_seat = round_state.get("dealer_btn")
     active_seats = round_state.get("active_seats", [])
     sb_amount = round_state.get("small_blind_amount", 0)
-    bb_amount = sb_amount * 2
+    bb_amount = round_state.get("big_blind_amount") or sb_amount * 2
+    game_format = round_state.get("game_format", "cash")
+    scenario = round_state.get("scenario", "custom")
+    ante = round_state.get("ante", 0)
+    ante_type = round_state.get("ante_type", "none")
+    tournament_stage = round_state.get("tournament_stage")
     street = round_state.get("street", "preflop")
     community = round_state.get("community_card", [])
     pot = round_state.get("pot", {})
@@ -52,6 +65,7 @@ def format_table(round_state: dict, hero_uuid: str) -> str:
     # Build lookup maps: uuid -> name, uuid -> position
     seat_names: dict[str, str] = {}
     seat_positions: dict[str, str] = {}
+    seat_styles: dict[str, str] = {}
     hero_pos = ""
     hero_cards: list[str] = hole_cards_by_uuid.get(hero_uuid, [])
 
@@ -60,17 +74,27 @@ def format_table(round_state: dict, hero_uuid: str) -> str:
         seat_names[uuid_] = s["name"]
         lbl = pos_label(i, btn_seat, active_seats) if i in active_seats else ""
         seat_positions[uuid_] = lbl
+        if s.get("bot_style"):
+            seat_styles[uuid_] = s["bot_style"]
         if uuid_ == hero_uuid:
             hero_pos = lbl
 
     lines: list[str] = []
+
+    context = f"Format: {game_format}; Scenario: {scenario}"
+    if tournament_stage:
+        context += f"; Stage: {tournament_stage}"
+    lines.append(context)
 
     pos_str = f" ({hero_pos})" if hero_pos else ""
     if hero_cards:
         lines.append(f"Player's hand: {_cards(hero_cards)}{pos_str}")
     elif hero_pos:
         lines.append(f"Player's position: {hero_pos}")
-    lines.append(f"SB: {sb_amount}; BB: {bb_amount}")
+    blind_line = f"SB: {sb_amount}; BB: {bb_amount}"
+    if ante_type == "big_blind" and ante:
+        blind_line += f"; BB Ante: {ante}"
+    lines.append(blind_line)
     lines.append("")
 
     # Stacks
@@ -85,7 +109,9 @@ def format_table(round_state: dict, hero_uuid: str) -> str:
         who = f"{base} ({pos})" if pos else base
         state_str = s.get("state", "participating")
         suffix = " [folded]" if state_str == "folded" else (" [ALL IN]" if state_str == "allin" else "")
-        stack_parts.append(f"{who}: {s['stack']}{suffix}")
+        stack = s["stack"]
+        stack_bb = round(stack / bb_amount, 1) if bb_amount else 0
+        stack_parts.append(f"{who}: {stack} ({stack_bb} BB behind){suffix}")
     if stack_parts:
         lines.append("Stacks: " + ", ".join(stack_parts))
 
@@ -114,11 +140,16 @@ def format_table(round_state: dict, hero_uuid: str) -> str:
             continue
         lines.append(f"{street_labels[st]}:")
         for a in actions:
-            lines.append(_action_line(a, seat_names, seat_positions, hero_uuid))
+            lines.append(_action_line(a, seat_names, seat_positions, seat_styles, hero_uuid))
         lines.append("")
 
     # Current street indicator (if no actions recorded yet for it)
     if not action_histories.get(street):
         lines.append(f"Currently on: {street_labels.get(street, street)}")
 
+    if seat_styles:
+        lines.append(
+            "Evidence note: bot styles are configured simulation metadata; "
+            "they are not solver proof or observed population reads."
+        )
     return "\n".join(lines).strip()

@@ -110,6 +110,8 @@ def format_hand(hand: dict, game_sb: int, game_bb: int) -> str:
     elif hero_pos:
         lines.append(f"Player's position: {hero_pos}")
     lines.append(f"SB: {game_sb}; BB: {game_bb}")
+    if hand.get("active_player_count"):
+        lines.append(f"Players dealt: {hand['active_player_count']}")
     lines.append("")
 
     streets_data = hand.get("streets", {})
@@ -168,7 +170,7 @@ def format_hand(hand: dict, game_sb: int, game_bb: int) -> str:
         # Hand ended before showdown — only winner shown.
         winners = hand.get("winners", [])
         if winners:
-            lines.append("Showdown:")
+            lines.append("Result:")
             for w in winners:
                 base = "Player" if w.get("is_hero") else w["name"]
                 pos = w.get("position", "")

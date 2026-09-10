@@ -57,9 +57,9 @@ def _is_ollama_model(model: str) -> bool:
 
 
 def _is_reasoning_model(model: str) -> bool:
-    """o-series and newer thinking models that accept reasoning_effort but not temperature."""
+    """Models that accept reasoning_effort but not temperature."""
     m = model.strip().lower()
-    return m.startswith("o") or "thinking" in m
+    return m.startswith(("o", "gpt-5")) or "thinking" in m
 
 
 def _supports_temperature(model: str) -> bool:
@@ -308,7 +308,7 @@ async def stream_model_with_usage(
         async for chunk in _stream_openai_chat_with_usage(
             messages,
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             temperature=temperature,
             log_context=log_context,
             reasoning_effort=reasoning_effort,
@@ -365,7 +365,12 @@ async def chat_model_with_usage(
                 stream=False,
             )
         else:
-            extra = {"reasoning_effort": reasoning_effort} if _is_reasoning_model(model) else {}
+            # GPT-5.4 Chat Completions rejects function tools with non-zero
+            # reasoning effort.  Keep the existing Chat Completions tool loop
+            # compatible; a future Responses API migration can restore
+            # reasoning while using tools.
+            effective_effort = "none" if tools else reasoning_effort
+            extra = {"reasoning_effort": effective_effort} if _is_reasoning_model(model) else {}
             if _supports_temperature(model):
                 extra["temperature"] = temperature
             if tools:

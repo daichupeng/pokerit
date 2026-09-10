@@ -18,6 +18,7 @@ def _healthy_display():
     return {
         "vpip": _stat(pct=25, n=25, d=100),
         "pfr": _stat(pct=20, n=20, d=100),
+        "limp": _stat(pct=5, n=5, d=100),
         "three_bet": _stat(pct=7, n=7, d=100),
         "fold_to_3bet": _stat(pct=50, n=5, d=10),
         "wtsd": _stat(pct=27, n=27, d=100),
@@ -60,3 +61,30 @@ def test_multiple_leaks_all_detected():
     tags = {leak["tag"] for leak in leaks}
     assert "high_vpip" in tags
     assert "over_3bet" in tags
+
+
+def test_vpip_leak_uses_per_hand_table_size_profile_instead_of_mixed_average():
+    display = _healthy_display()
+    display["vpip"] = _stat(pct=19, n=19, d=100)
+    display["by_table_size"] = {
+        "8": {**_healthy_display(), "vpip": _stat(pct=19, n=9, d=50)},
+        "6": {**_healthy_display(), "vpip": _stat(pct=18, n=9, d=50)},
+    }
+
+    leaks = detect_stat_leaks(display, "cash_8max_100bb")
+    low_vpip = next(leak for leak in leaks if leak["tag"] == "low_vpip")
+
+    # 19% is healthy for the 8-max profile; 18% is moderate-low for 6-max.
+    assert low_vpip["severity"] == 2
+    assert low_vpip["evidence"]["table_size"] == 6
+    assert low_vpip["evidence"]["profile"] == "cash_6max_100bb"
+
+
+def test_short_handed_mtt_vpip_is_descriptive_until_profile_exists():
+    display = _healthy_display()
+    display["by_table_size"] = {
+        "6": {**_healthy_display(), "vpip": _stat(pct=5, n=1, d=20)},
+    }
+
+    tags = {leak["tag"] for leak in detect_stat_leaks(display, "mtt_8max_25bb")}
+    assert "low_vpip" not in tags

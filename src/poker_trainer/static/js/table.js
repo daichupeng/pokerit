@@ -98,6 +98,7 @@
       this.$pot = document.getElementById("pot");
       this.$message = document.getElementById("message");
       this.$controls = document.getElementById("controls");
+      this.$actionHint = document.getElementById("action-hint");
       this.$slider = document.getElementById("bet-slider");
       this.$input = document.getElementById("bet-input");
       this.$fold = document.getElementById("btn-fold");
@@ -145,6 +146,10 @@
       if (msg.type === "init") {
         if (msg.config) {
           this.bigBlind = msg.config.big_blind || 0;
+          this.startingStackBB = msg.config.starting_stack_bb || 0;
+          this.scenario = msg.config.scenario || "custom";
+          this.ante = msg.config.ante || 0;
+          this.anteType = msg.config.ante_type || "none";
           this.preflopQuick = msg.config.preflop_quick || [];
           this.postflopQuick = msg.config.postflop_quick || [];
         }
@@ -219,7 +224,10 @@
       const hero = view.seats.find((s) => s.is_hero);
       if (hero) this.heroUuid = hero.uuid;
 
-      this.$blinds.textContent = `Blinds ${view.small_blind_amount}/${view.small_blind_amount * 2}`;
+      const bb = view.big_blind_amount || view.small_blind_amount * 2;
+      const anteText = (view.ante_type === "big_blind" && view.ante)
+        ? ` · BB Ante ${view.ante}` : "";
+      this.$blinds.textContent = `${this.scenario.replace(/_/g, " ")} · ${this.startingStackBB}BB · Blinds ${view.small_blind_amount}/${bb}${anteText}`;
       this.$hand.textContent = view.round_count ? `Hand #${view.round_count}` : "";
 
       // At showdown, the union of the winners' best-5 cards is kept bright;
@@ -282,9 +290,14 @@
         if (actingUuid && seat.uuid === actingUuid) el.classList.add("acting");
         else if (!actingUuid && seat.pos === view.next_player) el.classList.add("acting");
         el.style.left = x + "%"; el.style.top = y + "%";
+        // Anchor rim seats inward so their cards/plates never grow outside the
+        // felt and into the action controls. Middle seats remain centered.
+        el.style.setProperty("--seat-tx", x <= 22 ? "0%" : x >= 78 ? "-100%" : "-50%");
+        el.style.setProperty("--seat-ty", y <= 25 ? "0%" : y >= 70 ? "-100%" : "-50%");
         this.seatEls[seat.uuid] = { el, x, y };
 
-        // All players' cards are the same (large) size. At showdown:
+        // Hero cards are deliberately larger; opponent cards stay compact so
+        // full-ring layouts remain readable at 100% browser zoom. At showdown:
         //  - a winner keeps their best-5 bright and dims their 2 unused cards;
         //  - a non-winner has both cards dimmed (they lost the pot).
         const sdEntry = sd[seat.uuid];
@@ -299,10 +312,10 @@
         hole.className = "hole";
         if (seat.hole_cards) {
           seat.hole_cards.forEach((c) =>
-            hole.appendChild(cardEl(c, { hero: true, dimmed: dimCard(c) })));
+            hole.appendChild(cardEl(c, { hero: seat.is_hero, dimmed: dimCard(c) })));
         } else if (seat.state !== "folded") {
-          hole.appendChild(cardEl("back", { hero: true }));
-          hole.appendChild(cardEl("back", { hero: true }));
+          hole.appendChild(cardEl("back", { hero: seat.is_hero }));
+          hole.appendChild(cardEl("back", { hero: seat.is_hero }));
         }
 
         const plate = document.createElement("div");
@@ -482,11 +495,19 @@
       this._callAmount = callAmt;
       const raise = by.raise ? by.raise.amount : { min: -1, max: -1 };
       const canRaise = raise.min !== -1 && raise.max !== -1;
+      const canCheck = callAmt === 0;
 
       // Fold always; Check/Bet vs Call/Raise depending on call amount
       this.$fold.disabled = false;
       this.$call.disabled = false;
-      this.$call.textContent = callAmt === 0 ? "Check" : `Call ${callAmt}`;
+      this.$call.textContent = canCheck ? "✓ Check — Free" : `Call ${callAmt}`;
+      this.$call.classList.toggle("check-ready", canCheck);
+      this.$controls.classList.toggle("can-check", canCheck);
+      this.$actionHint.textContent = canCheck
+        ? "No bet to call — check for free"
+        : `Your turn — ${callAmt} to call`;
+      this.$actionHint.classList.toggle("check-ready", canCheck);
+      this.setMessage(canCheck ? "Your turn — CHECK is free" : "Your turn", canCheck ? "check" : "turn");
 
       if (canRaise) {
         this.$raise.disabled = false;
@@ -528,6 +549,10 @@
       this.myTurn = false;
       [this.$fold, this.$call, this.$raise, this.$slider, this.$input].forEach((e) => (e.disabled = true));
       this.$quickRow.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      this.$controls.classList.remove("can-check");
+      this.$call.classList.remove("check-ready");
+      this.$actionHint.classList.remove("check-ready");
+      this.$actionHint.textContent = "";
     }
 
     send(action, amount) {
@@ -535,6 +560,7 @@
       if (!this.myTurn) return;
       if (!this.ws || this.ws.readyState !== 1) return;
       this.disableControls();
+      this.setMessage("Action submitted…");
       this.ws.send(JSON.stringify({ type: "action", action, amount: amount || 0 }));
     }
 
@@ -706,7 +732,11 @@
       }
     }
 
-    setMessage(text) { this.$message.textContent = text; }
+    setMessage(text, tone) {
+      this.$message.textContent = text;
+      this.$message.classList.toggle("check-prompt", tone === "check");
+      this.$message.classList.toggle("turn-prompt", tone === "turn");
+    }
   }
 
   // ---- helpers ----
@@ -734,7 +764,15 @@
   // GET /api/games/{id}/stats, /api/profile/stats, and the stats_update WS event) ----
   function pctLabel(stat) {
     if (!stat) return "—";
+    if (stat.pct === null || stat.pct === undefined) return `— (${stat.n}/${stat.d})`;
     return `${stat.pct}% (${stat.n}/${stat.d})`;
+  }
+
+  function ratioLabel(stat) {
+    if (!stat) return "—";
+    if (stat.infinite) return `∞ (${stat.n}/${stat.d})`;
+    if (stat.ratio === null || stat.ratio === undefined) return `— (${stat.n}/${stat.d})`;
+    return `${stat.ratio} (${stat.n}/${stat.d})`;
   }
 
   function heroStatsHTML(s, opts) {
@@ -753,11 +791,21 @@
       ["Fold to C-Bet River", pctLabel(s.fold_to_cbet && s.fold_to_cbet.river)],
       ["WTSD", pctLabel(s.wtsd)],
       ["W$SD", pctLabel(s.wsd)],
-      ["Aggression Factor", s.aggression_factor ? `${s.aggression_factor.ratio} (${s.aggression_factor.n}/${s.aggression_factor.d})` : "—"],
+      ["Aggression Factor", ratioLabel(s.aggression_factor)],
     ];
     const body = rows.map(([label, val]) => `<tr><td>${esc(label)}</td><td>${val}</td></tr>`).join("");
+    const tableSizeRows = Object.entries(s.by_table_size || {})
+      .sort((a, b) => Number(b[0]) - Number(a[0]))
+      .map(([size, segment]) =>
+        `<tr><td>${esc(size)}-handed</td><td>${pctLabel(segment.vpip)}</td><td>${pctLabel(segment.pfr)}</td></tr>`
+      ).join("");
+    const tableSizeBreakdown = tableSizeRows
+      ? `<details class="table-size-stats"><summary>By players dealt</summary>` +
+        `<table class="stat-table"><thead><tr><th>Table</th><th>VPIP</th><th>PFR</th></tr></thead>` +
+        `<tbody>${tableSizeRows}</tbody></table></details>`
+      : "";
     return `<div class="hero-stats">${title}` +
-      `<p class="tiny muted">Hands dealt: ${s.hands_dealt}</p>` +
+      `<p class="tiny muted">Hands dealt: ${s.hands_dealt}</p>${tableSizeBreakdown}` +
       `<table class="stat-table"><tbody>${body}</tbody></table></div>`;
   }
   window.heroStatsHTML = heroStatsHTML;

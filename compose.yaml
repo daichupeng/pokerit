@@ -118,8 +118,10 @@ services:
       LOG_DIR: /app/logs
       LOG_LEVEL: INFO
       LOG_JSON: "1"
-    # Runs the game-evaluation background pipeline (Stage 4 of the coach agent).
-    command: uv run arq poker_trainer.worker.WorkerSettings
+    # Reload the development worker when mounted source changes. Without this,
+    # the web app hot-reloads while long-lived evaluation jobs keep stale model
+    # enums and pipeline code until the container is restarted manually.
+    command: uv run arq --watch /app/src poker_trainer.worker.WorkerSettings
     volumes:
       - ./src:/app/src
       - ./scripts:/app/scripts
@@ -172,4 +174,3 @@ services:
 volumes:
   pgdata:
   ollama_data:
-

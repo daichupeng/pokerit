@@ -32,7 +32,7 @@ def _run_sync(coro):
     return loop.run_until_complete(coro)
 
 
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-5.4-mini"
 DEFAULT_TEMPERATURE = 0.7
 
 _ACTION_SCHEMA = """\

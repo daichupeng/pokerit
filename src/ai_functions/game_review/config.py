@@ -6,4 +6,4 @@ feature's architecture decisions — no model tiering this phase.
 
 from __future__ import annotations
 
-MODEL = "gpt-5-mini"
+MODEL = "gpt-5.4-mini"

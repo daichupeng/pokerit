@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from poker_engine.db.models import Action, Game, GamePlayer, Hand, HandPlayer, Street, User
 from shared_services.llm import StreamResult, TokenUsage
 
@@ -78,6 +80,33 @@ def test_parse_findings_keeps_valid_finding_and_attaches_hand_id():
     }]
 
 
+def test_parse_findings_preserves_structured_explanation():
+    hand = Hand(round_count=6)
+    hand.id = "hand-uuid-6"
+    raw = json.dumps([{
+        "tag": "missed_fold", "round_count": 6,
+        "hero_action": "called 900", "issue": "range is too weak",
+        "better_line": "fold", "why": "calling realizes equity poorly",
+        "future_plan": "continue only on strong turns", "confidence": "high",
+    }])
+
+    finding = parse_findings(raw, [hand], "turn")[0]
+
+    assert finding["hero_action"] == "called 900"
+    assert finding["issue"] == "range is too weak"
+    assert finding["better_line"] == "fold"
+    assert finding["why"] == "calling realizes equity poorly"
+
+
+def test_parse_findings_can_require_complete_explanation():
+    hand = Hand(round_count=8)
+    hand.id = "hand-uuid-8"
+    raw = json.dumps([{"tag": "missed_fold", "round_count": 8, "note": "too loose"}])
+
+    with pytest.raises(ValueError, match="hero_action, issue, better_line, and why"):
+        parse_findings(raw, [hand], "river", require_explanation=True)
+
+
 def test_parse_findings_drops_unknown_tag():
     hand = Hand(round_count=1)
     hand.id = "hand-uuid-1"
@@ -135,7 +164,12 @@ def test_run_street_agent_citation_matches_scripted_finding(db_session, monkeypa
     hand = _add_hand(db, game, hero_gp, villain_gp, round_count=7)
 
     async def _fake_chat_model_with_usage(**kwargs):
-        finding = {"tag": "missed_fold", "round_count": 7, "note": "hero should have folded here"}
+        finding = {
+            "tag": "missed_fold", "round_count": 7,
+            "hero_action": "called", "issue": "range is too weak",
+            "better_line": "fold", "why": "calling realizes equity poorly",
+            "confidence": "high",
+        }
         return StreamResult(text=json.dumps([finding]), usage=TokenUsage(prompt_tokens=10, completion_tokens=5))
 
     monkeypatch.setattr(

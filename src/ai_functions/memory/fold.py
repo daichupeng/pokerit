@@ -19,10 +19,11 @@ from __future__ import annotations
 
 from ai_functions.game_review import leak_taxonomy
 from ai_functions.memory import persistence
+from poker_engine.scenarios import DEFAULT_PROFILE_SCOPE
 
 EMPTY_PROFILE_STATE = {"evaluations_folded": 0, "leaks": []}
 
-_ALL_TAGS = frozenset(leak_taxonomy.ALL_STAT_TAGS) | frozenset(leak_taxonomy.JUDGMENT_TAGS)
+_ALL_TAGS = frozenset(leak_taxonomy.ALL_STAT_TAGS) | frozenset(leak_taxonomy.ALL_JUDGMENT_TAGS)
 
 
 def _new_record(tag: str, kind: str) -> dict:
@@ -64,11 +65,11 @@ def _apply_absence(record: dict) -> None:
         record["regressed"] = False
 
 
-def _has_opportunity(tag: str, kind: str, stats_display: dict) -> bool:
+def _has_opportunity(tag: str, kind: str, stats_display: dict, profile_key: str | None) -> bool:
     if kind == "judgment":
         return True  # opportunity = the game was evaluated at all
     d = leak_taxonomy.stat_tag_opportunity(tag, stats_display)
-    return d is not None and d >= leak_taxonomy.MIN_OPPORTUNITY_FLOOR
+    return d is not None and d >= leak_taxonomy.minimum_opportunities_for_tag(tag, profile_key)
 
 
 def fold_evaluation(profile_state: dict, evaluation: dict) -> dict:
@@ -89,6 +90,7 @@ def fold_evaluation(profile_state: dict, evaluation: dict) -> dict:
     leak_tags = evaluation.get("leak_tags") or []
     disputed = set(evaluation.get("disputed_tags") or [])
     stats_display = evaluation.get("stats_snapshot") or {}
+    threshold_profile = evaluation.get("threshold_profile")
     present_by_tag = {lt["tag"]: lt for lt in leak_tags if lt["tag"] not in disputed}
 
     universe = set(tags_by_name) | set(present_by_tag) | _ALL_TAGS
@@ -108,7 +110,7 @@ def fold_evaluation(profile_state: dict, evaluation: dict) -> dict:
         record = tags_by_name.get(tag)
         if record is None or record["status"] not in ("flagged", "confirmed"):
             continue  # never appeared, or already resolved — no change
-        if not _has_opportunity(tag, record["kind"], stats_display):
+        if not _has_opportunity(tag, record["kind"], stats_display, threshold_profile):
             continue  # absence without opportunity — streak neither grows nor resets
         _apply_absence(record)
 
@@ -119,7 +121,9 @@ def fold_evaluation(profile_state: dict, evaluation: dict) -> dict:
     }
 
 
-def rebuild_profile(db, user_id, reset_at=None) -> dict:
+def rebuild_profile(
+    db, user_id, reset_at=None, scope_key: str = DEFAULT_PROFILE_SCOPE
+) -> dict:
     """Replay a user's entire folded evaluation history from scratch.
 
     Must always produce a state identical to whatever incremental folding
@@ -129,9 +133,11 @@ def rebuild_profile(db, user_id, reset_at=None) -> dict:
     aren't the reset route itself don't need to look it up separately.
     """
     if reset_at is None:
-        existing = persistence.load_profile_row(db, user_id)
+        existing = persistence.load_profile_row(db, user_id, scope_key)
         reset_at = existing.reset_at if existing else None
-    evaluations = persistence.query_folded_evaluations(db, user_id, reset_at)
+    evaluations = persistence.query_folded_evaluations(
+        db, user_id, reset_at, scope_key
+    )
     state = dict(EMPTY_PROFILE_STATE)
     for evaluation in evaluations:
         state = fold_evaluation(state, persistence.evaluation_to_fold_input(evaluation))

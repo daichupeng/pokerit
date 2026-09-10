@@ -23,10 +23,14 @@ _TREND_STATS = (
 _FLAT_EPSILON = 1e-9
 
 
-def _direction(series: list[float]) -> str:
+def _direction(series: list[dict]) -> str:
     if len(series) < 2:
         return "flat"
-    delta = series[-1] - series[0]
+    first = float("inf") if series[0].get("infinite") else series[0]["value"]
+    last = float("inf") if series[-1].get("infinite") else series[-1]["value"]
+    if first == last:
+        return "flat"
+    delta = last - first
     if abs(delta) < _FLAT_EPSILON:
         return "flat"
     return "up" if delta > 0 else "down"
@@ -47,11 +51,20 @@ def compute_trends(snapshots: list[dict]) -> dict[str, dict]:
             node = snapshot.get(stat_name)
             if not node or value_key not in node:
                 continue
-            series.append({"value": node[value_key], "n": node.get("n"), "d": node.get("d")})
+            value = node[value_key]
+            infinite = bool(node.get("infinite"))
+            # 0/0 is undefined and must not become a fake AF data point.  A
+            # positive numerator over zero calls is a real, infinite AF point.
+            if value is None and not infinite:
+                continue
+            point = {"value": value, "n": node.get("n"), "d": node.get("d")}
+            if infinite:
+                point["infinite"] = True
+            series.append(point)
         if not series:
             continue
         trends[stat_name] = {
             "series": series,
-            "direction": _direction([point["value"] for point in series]),
+            "direction": _direction(series),
         }
     return trends
