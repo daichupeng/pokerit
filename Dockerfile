@@ -14,14 +14,12 @@ WORKDIR /app
 # All dependencies (including pokerkit) install from PyPI — no vendored source needed.
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY migrations ./migrations
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-install-project
 
 # Now copy the source and install the project itself.
 COPY src ./src
 COPY scripts ./scripts
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv sync --frozen
+RUN uv sync --frozen
 
 # Default: serve the web app. (Override with a script command to run a CLI game.)
 ENV PYTHONPATH=/app/src
