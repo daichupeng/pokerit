@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from uuid import uuid4
+
+from sqlalchemy import select
 
 from poker_engine.config import GameConfig
 from poker_engine.db.models import (
@@ -97,6 +100,8 @@ class PerspectiveRecorder:
         # Incremental persistence state (used by ``flush_incremental``). The
         # one-shot ``flush`` ignores these.
         self._game_id = None
+        # Stable identity also covers a commit whose acknowledgement was lost.
+        self._pending_game_id = uuid4()
         self._persisted_rounds: set[int] = set()
 
     # -- live accessors -----------------------------------------------------
@@ -360,20 +365,20 @@ class PerspectiveRecorder:
             for hand in self._hands:
                 hand.revealed_cards.setdefault(hero_engine_uuid, list(hand.hero_hole))
 
-        if self._game_id is None:
+        game = session.get(Game, self._game_id or self._pending_game_id)
+        if game is None:
             hero_user = self._upsert_hero_user(session, config)
             game, gp_by_uuid = self._create_game_and_seats(
                 session, config, hero_user, bot_params_by_uuid, started_at, ended_at
             )
-            session.flush()  # assign PKs
-            self._game_id = game.id
+            game.id = self._pending_game_id
+            session.flush()  # assign seat PKs, but do not acknowledge persistence yet
         else:
-            game = session.get(Game, self._game_id)
             # Re-resolve seats by id within this live session (the cached ORM
             # objects from a prior call are detached now).
             gp_by_uuid = {
                 gp.engine_uuid: gp
-                for gp in session.query(GamePlayer).filter_by(game_id=self._game_id)
+                for gp in session.query(GamePlayer).filter_by(game_id=game.id)
             }
             if ended_at is not None:
                 game.ended_at = ended_at
@@ -385,12 +390,15 @@ class PerspectiveRecorder:
         # contents from ever being saved.
         completed = [h for h in self._hands if h is not self._current]
 
-        # Append hands not yet written.
+        # Reconcile with committed data on retry, including an ambiguous commit.
+        persisted_rounds = set(session.scalars(
+            select(Hand.round_count).where(Hand.game_id == game.id)
+        ))
         for hand_rec in completed:
-            if hand_rec.round_count in self._persisted_rounds:
+            if hand_rec.round_count in persisted_rounds:
                 continue
             self._persist_hand(session, game, hand_rec, gp_by_uuid)
-            self._persisted_rounds.add(hand_rec.round_count)
+            persisted_rounds.add(hand_rec.round_count)
 
         # Recompute aggregate stats + final stacks from all completed hands.
         for gp in gp_by_uuid.values():
@@ -403,6 +411,8 @@ class PerspectiveRecorder:
         self._accumulate_stats(gp_by_uuid, hands=completed)
 
         session.commit()
+        self._game_id = game.id
+        self._persisted_rounds = persisted_rounds
         return game
 
     def _persist_hand(self, session, game, hand_rec, gp_by_uuid):

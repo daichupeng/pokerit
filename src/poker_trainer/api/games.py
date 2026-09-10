@@ -19,14 +19,17 @@ from poker_engine.scenarios import (
     SCENARIO_PRESETS,
     get_scenario_preset,
     profile_scope_for_settings,
+    profile_scope_for_game,
 )
 from poker_trainer.auth.deps import get_db, require_user
 from poker_trainer.game.manager import manager
 from poker_trainer.game.session import GameSession
 from poker_trainer.preferences import (
     bet_shortcuts_from_preferences,
+    showdown_visibility_from_preferences,
     validate_quick_sizes,
 )
+from shared_services.decision_facts import normalize_action_rows
 
 router = APIRouter(prefix="/api", tags=["games"])
 
@@ -81,7 +84,7 @@ class CreateGameRequest(BaseModel):
     small_blind: int = Field(default=50, ge=1)
     big_blind: int = Field(default=100, ge=2)
     buy_in: int = Field(default=10000, ge=1)
-    max_round: int = Field(default=50, ge=1, le=500)
+    max_round: int = Field(default=50, ge=1, le=100)
     scenario: str = CUSTOM_SCENARIO
     game_format: str = "cash"
     ante: int = Field(default=0, ge=0)
@@ -177,6 +180,9 @@ def create_game(req: CreateGameRequest, hero: User = Depends(require_user)) -> C
         buy_in=settings["buy_in"],
         big_blind=settings["big_blind"],
         scenario=settings["scenario"],
+        num_players=settings["num_bots"] + 1,
+        ante=settings["ante"], ante_type=settings["ante_type"],
+        tournament_stage=settings["tournament_stage"],
     )
     seats = _build_seats(req, hero, settings["num_bots"])
     config = GameConfig(
@@ -209,9 +215,10 @@ def create_game(req: CreateGameRequest, hero: User = Depends(require_user)) -> C
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    session = GameSession(config, hero_index=0, seed=req.seed)
+    session = GameSession(config, hero_index=0, seed=req.seed, owner_user_id=hero.id)
     session.preflop_quick = preflop
     session.postflop_quick = postflop
+    session.showdown_visibility = showdown_visibility_from_preferences(hero.preferences)
     manager.add(session)
     return CreateGameResponse(
         game_id=session.game_id,
@@ -284,7 +291,7 @@ def list_games(
                 starting_stack_bb=round(game.buy_in / game.big_blind, 1),
                 ante=game.ante,
                 ante_type=game.ante_type,
-                profile_scope=game.profile_scope,
+                profile_scope=profile_scope_for_game(game),
             )
         )
     return out
@@ -334,7 +341,7 @@ def list_hands(
         "game_format": game.game_format,
         "scenario": game.scenario,
         "tournament_stage": game.tournament_stage,
-        "profile_scope": game.profile_scope,
+        "profile_scope": profile_scope_for_game(game),
         "started_at": game.started_at.isoformat() if game.started_at else None,
         "hands": rows,
     }
@@ -508,6 +515,8 @@ def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
                 "pot_after": pot_carried + chips_added_this_street,
             })
 
+        action_rows = normalize_action_rows(action_rows, st)
+
         # Player stacks at the START of this street.
         # Include players who were still active entering this street.
         player_stacks = [
@@ -541,8 +550,22 @@ def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
 
     # Hand values at showdown for all revealed players.
     showdown_hands = []
+    mucked_players = []
     if hand.had_showdown:
         for hp in hand.players:
+            participated = hp.starting_stack is None or hp.starting_stack > 0
+            if (
+                participated
+                and hp.game_player_id not in folded_gp_ids
+                and (not hp.hole_cards or not hp.revealed)
+            ):
+                gp = seat_by_gp.get(hp.game_player_id)
+                mucked_players.append({
+                    "name": gp.display_name if gp else "?",
+                    "is_hero": hp.game_player_id == hero_gp_id,
+                    "position": pos_of(hp.game_player_id),
+                })
+                continue
             if not hp.hole_cards or not hp.revealed:
                 continue
             if hp.game_player_id == hero_gp_id and hp.game_player_id in folded_gp_ids:
@@ -580,6 +603,7 @@ def _build_hand_detail(game: Game, hand: Hand, hero_gp_id) -> dict:
         "streets": streets_out,
         "winners": winners,
         "showdown_hands": showdown_hands,
+        "mucked_players": mucked_players,
         "button_pos": hand.button_pos,
     }
 

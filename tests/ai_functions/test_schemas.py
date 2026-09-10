@@ -10,6 +10,7 @@ from ai_functions.tools.schemas import (
     HAND_LOOKUP_SCHEMA,
     HAND_SEARCH_SCHEMA,
     POT_ODDS_SCHEMA,
+    RANGE_EQUITY_CALCULATOR_SCHEMA,
     STATS_QUERY_SCHEMA,
 )
 
@@ -42,6 +43,15 @@ def test_equity_calculator_description_states_random_opponent_equity():
     desc = EQUITY_CALCULATOR_SCHEMA["function"]["description"].lower()
     assert "random opponent" in desc
     assert "not" in desc
+
+
+def test_range_equity_schema_keeps_live_cards_code_bound():
+    props = RANGE_EQUITY_CALCULATOR_SCHEMA["function"]["parameters"]["properties"]
+
+    assert set(props) == {"villain_ranges", "board_street"}
+    assert {"hole", "board", "hero_cards", "community_cards"}.isdisjoint(props)
+    assert props["board_street"]["enum"] == ["current", "flop", "turn", "river"]
+    assert RANGE_EQUITY_CALCULATOR_SCHEMA not in ALL_TOOL_SCHEMAS
 
 
 def test_no_schema_ever_exposes_scoping_params():

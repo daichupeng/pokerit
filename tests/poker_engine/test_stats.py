@@ -83,6 +83,50 @@ def test_big_blind_free_check_is_not_vpip():
     assert counts.limp_hands == 0
 
 
+def test_limp_types_are_exclusive_and_sb_complete_is_separate():
+    sb_hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="SB"), _hp(VILLAIN, position="BB")],
+        [
+            _act(HERO, Street.PREFLOP, "call", 50, 0),
+            _act(VILLAIN, Street.PREFLOP, "raise", 400, 1),
+            _act(HERO, Street.PREFLOP, "fold", 0, 2),
+        ],
+    )
+    counts = compute_hand_stats(sb_hand, HERO)
+
+    assert counts.limp_hands == 1
+    assert counts.sb_complete_hands == 1
+    assert counts.open_limp_hands == 0
+    assert counts.over_limp_hands == 0
+    assert counts.three_bet_opportunities == 0
+    assert counts.limp_reraise_opportunities == 1
+
+
+def test_non_sb_open_limp_and_over_limp_are_separate():
+    open_limp = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="CO"), _hp(VILLAIN, position="HJ")],
+        [
+            _act(VILLAIN, Street.PREFLOP, "fold", 0, 0),
+            _act(HERO, Street.PREFLOP, "call", 100, 1),
+        ],
+    )
+    over_limp = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="CO"), _hp(VILLAIN, position="HJ")],
+        [
+            _act(VILLAIN, Street.PREFLOP, "call", 100, 0),
+            _act(HERO, Street.PREFLOP, "call", 100, 1),
+        ],
+    )
+
+    assert compute_hand_stats(open_limp, HERO).open_limp_hands == 1
+    assert compute_hand_stats(open_limp, HERO).over_limp_hands == 0
+    assert compute_hand_stats(over_limp, HERO).open_limp_hands == 0
+    assert compute_hand_stats(over_limp, HERO).over_limp_hands == 1
+
+
 def test_pfr_hand_hero_raises_preflop():
     hand = _hand(
         Street.PREFLOP,
@@ -127,6 +171,42 @@ def test_three_bet_opportunity_declined():
     counts = compute_hand_stats(hand, HERO)
     assert counts.three_bet_opportunities == 1
     assert counts.three_bet_hands == 0
+
+
+def test_limp_reraise_opportunity_is_not_a_standard_three_bet_opportunity():
+    hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="HJ"), _hp(VILLAIN, position="CO")],
+        [
+            _act(HERO, Street.PREFLOP, "call", 100, 0),
+            _act(VILLAIN, Street.PREFLOP, "raise", 500, 1),
+            _act(HERO, Street.PREFLOP, "raise", 1500, 2),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+
+    assert counts.three_bet_opportunities == 0
+    assert counts.three_bet_hands == 0
+    assert counts.limp_reraise_opportunities == 1
+    assert counts.limp_reraise_hands == 1
+
+
+def test_squeeze_is_a_standard_three_bet_subtype():
+    hand = _hand(
+        Street.PREFLOP, False,
+        [_hp(HERO, position="SB"), _hp(VILLAIN, position="HJ"), _hp(VILLAIN2, position="CO")],
+        [
+            _act(VILLAIN, Street.PREFLOP, "raise", 300, 0),
+            _act(VILLAIN2, Street.PREFLOP, "call", 300, 1),
+            _act(HERO, Street.PREFLOP, "raise", 1400, 2),
+        ],
+    )
+    counts = compute_hand_stats(hand, HERO)
+
+    assert counts.three_bet_opportunities == 1
+    assert counts.three_bet_hands == 1
+    assert counts.squeeze_opportunities == 1
+    assert counts.squeeze_hands == 1
 
 
 def test_raise_after_hero_fold_is_not_a_three_bet_opportunity():

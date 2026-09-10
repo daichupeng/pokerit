@@ -13,8 +13,9 @@ from ai_functions.game_review.leak_taxonomy import get_threshold_profile
 from poker_engine.db.models import EvaluationStatus, Game, Hand, HistoryEvaluation, User
 from poker_engine.scenarios import (
     DEFAULT_PROFILE_SCOPE,
-    PROFILE_SCOPE_LABELS,
     profile_scope_for_game,
+    is_profile_scope,
+    profile_scope_label,
 )
 from poker_trainer.auth.deps import get_db, require_user
 from poker_trainer.jobs import get_redis_pool
@@ -29,7 +30,7 @@ class HistoryEvaluationRequest(BaseModel):
 
 
 def _validate_scope(scope: str) -> None:
-    if scope not in PROFILE_SCOPE_LABELS:
+    if not is_profile_scope(scope):
         raise HTTPException(422, f"Unknown training profile scope: {scope}")
 
 
@@ -47,6 +48,7 @@ def _summary(evaluation: HistoryEvaluation) -> dict:
     return {
         "evaluation_id": str(evaluation.id),
         "scope": evaluation.scope_key,
+        "scope_label": (evaluation.report or {}).get("scope_label") or profile_scope_label(evaluation.scope_key),
         "status": evaluation.status.value,
         "window_hands": evaluation.window_hands,
         "latest_game_id": str(evaluation.latest_game_id) if evaluation.latest_game_id else None,
@@ -62,6 +64,8 @@ async def create_history_evaluation(
     db: Session = Depends(get_db),
 ) -> dict:
     _validate_scope(body.scope)
+    if body.scope == "custom":
+        raise HTTPException(422, "Choose a specific custom training scope; mixed custom history cannot be evaluated.")
     if body.latest_game_id is not None:
         latest_game = db.get(Game, body.latest_game_id)
         if latest_game is None or latest_game.hero_user_id != user.id:

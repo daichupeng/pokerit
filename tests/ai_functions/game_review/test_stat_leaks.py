@@ -19,6 +19,9 @@ def _healthy_display():
         "vpip": _stat(pct=25, n=25, d=100),
         "pfr": _stat(pct=20, n=20, d=100),
         "limp": _stat(pct=5, n=5, d=100),
+        "open_limp": _stat(pct=3, n=3, d=100),
+        "over_limp": _stat(pct=1, n=1, d=100),
+        "sb_complete": _stat(pct=1, n=1, d=100),
         "three_bet": _stat(pct=7, n=7, d=100),
         "fold_to_3bet": _stat(pct=50, n=5, d=10),
         "wtsd": _stat(pct=27, n=27, d=100),
@@ -63,7 +66,41 @@ def test_multiple_leaks_all_detected():
     assert "over_3bet" in tags
 
 
-def test_vpip_leak_uses_per_hand_table_size_profile_instead_of_mixed_average():
+def test_three_bet_leak_carries_standard_opportunities_and_limp_reraise_split():
+    display = _healthy_display()
+    display["three_bet"] = _stat(pct=0, n=0, d=7)
+    display["squeeze"] = _stat(pct=0, n=0, d=1)
+    display["limp_reraise"] = _stat(pct=0, n=0, d=4)
+    display["preflop_events"] = {
+        "three_bet_opportunity": [
+            {"hand_id": "h1", "round_count": 1, "position": "BTN", "action": "fold"},
+        ],
+        "limp_reraise_opportunity": [
+            {"hand_id": "h2", "round_count": 2, "position": "SB", "action": "call"},
+        ],
+    }
+
+    leak = next(item for item in detect_stat_leaks(display) if item["tag"] == "under_3bet")
+
+    assert leak["evidence"]["definition"] == "first voluntary hero decision facing exactly one raise"
+    assert leak["evidence"]["limp_reraise"] == _stat(pct=0, n=0, d=4)
+    assert leak["citations"] == [{
+        "hand_id": "h1", "round_count": 1, "street": "preflop", "action": "fold",
+    }]
+
+
+def test_sb_completes_do_not_trigger_open_limp_leak():
+    display = _healthy_display()
+    display["limp"] = _stat(pct=10, n=10, d=100)
+    display["open_limp"] = _stat(pct=2, n=2, d=100)
+    display["sb_complete"] = _stat(pct=8, n=8, d=100)
+
+    tags = {item["tag"] for item in detect_stat_leaks(display)}
+
+    assert "limps_too_wide" not in tags
+
+
+def test_vpip_leak_uses_hands_weighted_table_size_references():
     display = _healthy_display()
     display["vpip"] = _stat(pct=19, n=19, d=100)
     display["by_table_size"] = {
@@ -74,10 +111,38 @@ def test_vpip_leak_uses_per_hand_table_size_profile_instead_of_mixed_average():
     leaks = detect_stat_leaks(display, "cash_8max_100bb")
     low_vpip = next(leak for leak in leaks if leak["tag"] == "low_vpip")
 
-    # 19% is healthy for the 8-max profile; 18% is moderate-low for 6-max.
+    # The 50/50 mix produces a weighted moderate boundary of 19%.
     assert low_vpip["severity"] == 2
-    assert low_vpip["evidence"]["table_size"] == 6
-    assert low_vpip["evidence"]["profile"] == "cash_6max_100bb"
+    assert low_vpip["evidence"]["pct"] == 18.0
+    assert low_vpip["evidence"]["n"] == 18
+    assert low_vpip["evidence"]["d"] == 100
+    assert low_vpip["evidence"]["reference"]["moderate_bound"] == 19.0
+    assert [segment["table_size"] for segment in low_vpip["evidence"]["segments"]] == [8, 6]
+
+
+def test_one_short_bad_vpip_segment_does_not_represent_a_healthy_mixed_session():
+    display = _healthy_display()
+    display["vpip"] = _stat(pct=28.0, n=28, d=100)
+    display["by_table_size"] = {
+        "8": {**_healthy_display(), "vpip": _stat(pct=50, n=5, d=10)},
+        "6": {**_healthy_display(), "vpip": _stat(pct=25.6, n=23, d=90)},
+    }
+
+    tags = {leak["tag"] for leak in detect_stat_leaks(display, "cash_8max_100bb")}
+
+    assert "high_vpip" not in tags
+
+
+def test_vpip_segment_below_50_hands_remains_descriptive():
+    display = _healthy_display()
+    display["vpip"] = _stat(pct=32.3, n=10, d=31)
+    display["by_table_size"] = {
+        "7": {**_healthy_display(), "vpip": _stat(pct=32.3, n=10, d=31)},
+    }
+
+    tags = {leak["tag"] for leak in detect_stat_leaks(display, "cash_8max_100bb")}
+
+    assert "high_vpip" not in tags
 
 
 def test_short_handed_mtt_vpip_is_descriptive_until_profile_exists():

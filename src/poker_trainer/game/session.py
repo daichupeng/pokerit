@@ -21,7 +21,11 @@ from poker_engine.bots.llm_styles import LLM_STYLE_REGISTRY
 from poker_engine.config import GameConfig, SeatKind
 from poker_engine.recorder import PerspectiveRecorder
 from poker_trainer.game.serialize import build_round_state, build_view
-from poker_trainer.preferences import DEFAULT_POSTFLOP_QUICK, DEFAULT_PREFLOP_QUICK
+from poker_trainer.preferences import (
+    DEFAULT_POSTFLOP_QUICK,
+    DEFAULT_PREFLOP_QUICK,
+    DEFAULT_SHOWDOWN_VISIBILITY,
+)
 
 # Automations that fire without any explicit call:
 #   ANTE_POSTING           post antes at hand start
@@ -60,20 +64,155 @@ def _showdown_contender_uuids(
     showdown occurred.  Folding, however, is explicit and permanent: two or
     more active seats that never folded necessarily reached showdown.
     """
-    folded = {
+    folded = _folded_uuids(action_histories)
+    return {uuid_ for uuid_ in active_uuids if uuid_ not in folded}
+
+
+def _folded_uuids(action_histories: dict[str, list[dict]]) -> set[str]:
+    """UUIDs that made an explicit fold action in this hand."""
+    return {
         entry.get("uuid")
         for actions in action_histories.values()
         for entry in actions
         if str(entry.get("action", "")).upper() == "FOLD"
+        and entry.get("uuid")
     }
-    return {uuid_ for uuid_ in active_uuids if uuid_ not in folded}
+
+
+def _all_in_uuids(action_histories: dict[str, list[dict]]) -> set[str]:
+    """UUIDs whose recorded betting action reduced their stack to zero."""
+    return {
+        entry.get("uuid")
+        for actions in action_histories.values()
+        for entry in actions
+        if entry.get("uuid")
+        and entry.get("stack_after") == 0
+        and str(entry.get("action", "")).upper() != "FOLD"
+    }
+
+
+def _first_to_table_uuid(
+    contenders: set[str],
+    action_histories: dict[str, list[dict]],
+    active_uuids: list[str],
+    button_uuid: str | None,
+) -> str | None:
+    """Return the player required to show first at a non-all-in showdown."""
+    river_actions = action_histories.get("river", [])
+    aggressors = [
+        entry.get("uuid")
+        for entry in river_actions
+        if entry.get("uuid") in contenders
+        and str(entry.get("action", "")).upper() in {"BET", "RAISE"}
+    ]
+    if aggressors:
+        return aggressors[-1]
+
+    river_actors = [
+        entry.get("uuid")
+        for entry in river_actions
+        if entry.get("uuid") in contenders
+        and str(entry.get("action", "")).upper() != "FOLD"
+    ]
+    if river_actors:
+        return river_actors[0]
+
+    ordered = list(active_uuids)
+    if button_uuid in ordered:
+        button_index = ordered.index(button_uuid)
+        ordered = ordered[button_index + 1:] + ordered[:button_index + 1]
+    return next((uuid_ for uuid_ in ordered if uuid_ in contenders), None)
+
+
+def _called_last_river_bet_uuids(
+    contenders: set[str], action_histories: dict[str, list[dict]],
+) -> set[str]:
+    """Hands entitled to post-hand visibility after calling the last river bet."""
+    river_actions = action_histories.get("river", [])
+    last_aggressor_index = None
+    for index, entry in enumerate(river_actions):
+        if (
+            entry.get("uuid") in contenders
+            and str(entry.get("action", "")).upper() in {"BET", "RAISE"}
+        ):
+            last_aggressor_index = index
+    if last_aggressor_index is None:
+        return set()
+    return {
+        entry.get("uuid")
+        for entry in river_actions[last_aggressor_index + 1:]
+        if entry.get("uuid") in contenders
+        and str(entry.get("action", "")).upper() == "CALL"
+        and int(entry.get("amount") or 0) > 0
+    }
+
+
+def _showdown_visibility_uuids(
+    *,
+    contenders: set[str],
+    winners: set[str],
+    action_histories: dict[str, list[dict]],
+    active_uuids: list[str],
+    button_uuid: str | None,
+    mode: str,
+) -> dict[str, set[str] | bool]:
+    """Choose live-table and post-hand card visibility for one showdown.
+
+    All live hands are tabled after a called all-in. In a normal showdown the
+    first player in the enforced show order and every pot winner table their
+    hands; later losing hands may muck. Called river hands remain inspectable
+    in the saved hand history. Training mode makes every contender voluntarily
+    table their hand, but folded hands are never included.
+    """
+    all_in = _all_in_uuids(action_histories) & contenders
+    table_all = mode == "training" or bool(all_in)
+    if table_all:
+        live = set(contenders)
+    else:
+        live = set(winners) & contenders
+        first = _first_to_table_uuid(
+            contenders, action_histories, active_uuids, button_uuid,
+        )
+        if first is not None:
+            live.add(first)
+    history = set(live)
+    if not table_all:
+        history |= _called_last_river_bet_uuids(contenders, action_histories)
+    return {
+        "live": live,
+        "history": history,
+        "all_in": all_in,
+        "table_all": table_all,
+    }
+
+
+def _terminal_statuses(
+    *,
+    dealt_uuids: list[str],
+    contenders: set[str],
+    winners: set[str],
+    live_revealed: set[str],
+    all_in: set[str],
+) -> dict[str, dict]:
+    """Build explicit end-of-hand labels without inferring folds from engine state."""
+    result: dict[str, dict] = {}
+    for uuid_ in dealt_uuids:
+        if uuid_ in winners:
+            status = "win"
+        elif uuid_ in contenders:
+            status = "showdown" if uuid_ in live_revealed else "mucked"
+        else:
+            status = "fold"
+        result[uuid_] = {"status": status, "was_allin": uuid_ in all_in}
+    return result
 
 
 class GameSession:
-    def __init__(self, config: GameConfig, hero_index: int = 0, seed: int | None = None):
+    def __init__(self, config: GameConfig, hero_index: int = 0, seed: int | None = None, *, owner_user_id=None):
         config.validate()
         self.config = config
         self.game_id = str(uuidlib.uuid4())
+        self.owner_user_id = owner_user_id
         self.hero_index = hero_index
         self.seed = seed
         self._rng = random.Random(seed)
@@ -141,6 +280,13 @@ class GameSession:
         self._last_view: dict | None = None
         self.preflop_quick: list[float] = list(DEFAULT_PREFLOP_QUICK)
         self.postflop_quick: list[float] = list(DEFAULT_POSTFLOP_QUICK)
+        self.showdown_visibility = DEFAULT_SHOWDOWN_VISIBILITY
+        self._early_showdown_revealed = False
+        self._public_revealed_uuids: set[str] = set()
+        # One optional presolved lookup per Hero decision. Cache the complete
+        # result so failures are not retried by every follow-up chat and can be
+        # distinguished from the per-hand lookup cap.
+        self.preflop_strategy_cache: dict[str, object] = {}
 
     # -- public config -------------------------------------------------------
 
@@ -158,6 +304,7 @@ class GameSession:
             "profile_scope": self.config.profile_scope,
             "preflop_quick": self.preflop_quick,
             "postflop_quick": self.postflop_quick,
+            "showdown_visibility": self.showdown_visibility,
         }
 
     # -- lifecycle -----------------------------------------------------------
@@ -179,13 +326,27 @@ class GameSession:
 
     # -- hand lifecycle ------------------------------------------------------
 
+    def _rebuy_busted_bots(self) -> list[dict]:
+        """Cash-game buy-ins occur between hands, outside hand profit/loss."""
+        if self.config.game_format != "cash" or self._stacks[self.hero_index] <= 0:
+            return []
+        rebuys = []
+        for index, spec in enumerate(self.config.seats):
+            if index != self.hero_index and spec.is_bot and self._stacks[index] == 0:
+                self._stacks[index] = self.config.buy_in
+                rebuys.append({"uuid": self.seat_uuids[index], "name": spec.name, "amount": self.config.buy_in})
+        return rebuys
+
     def _start_hand(self) -> list[dict]:
         """Create a new PokerKit State, deal cards, and advance to first ask."""
+        rebuys = self._rebuy_busted_bots()
         n = len(self.config.seats)
         self._hand_num += 1
         self._action_histories = {s: [] for s in ("preflop", "flop", "turn", "river")}
         self._board = []
         self._current_street_index = 0
+        self._early_showdown_revealed = False
+        self._public_revealed_uuids = set()
 
         # Active seats only (busted players sit out).
         active_seats = [i for i in range(n) if self._stacks[i] > 0]
@@ -265,17 +426,20 @@ class GameSession:
         self.recorder._record_round_start(self._hand_num, self._hero_hole, seats_for_recorder)
 
         self._last_view = self._build_view()
-        out: list[dict] = [{"type": "new_street", "street": "preflop", "view": self._last_view}]
+        out: list[dict] = [{"type": "new_street", "street": "preflop", "view": self._last_view, "rebuys": rebuys}]
         out.extend(self._advance())
         return out
 
     def _start_hand_gen(self):
         """Generator that deals cards, yields the initial preflop view, then advances step by step."""
+        rebuys = self._rebuy_busted_bots()
         n = len(self.config.seats)
         self._hand_num += 1
         self._action_histories = {s: [] for s in ("preflop", "flop", "turn", "river")}
         self._board = []
         self._current_street_index = 0
+        self._early_showdown_revealed = False
+        self._public_revealed_uuids = set()
 
         active_seats = [i for i in range(n) if self._stacks[i] > 0]
         n_active = len(active_seats)
@@ -343,7 +507,7 @@ class GameSession:
 
         # Yield the dealt view immediately so the frontend shows cards before any bot thinks.
         self._last_view = self._build_view()
-        yield [{"type": "new_street", "street": "preflop", "view": self._last_view}]
+        yield [{"type": "new_street", "street": "preflop", "view": self._last_view, "rebuys": rebuys}]
 
         # Now advance step by step (bots highlight one at a time).
         yield from self._advance_gen()
@@ -370,6 +534,9 @@ class GameSession:
 
             if actor is None:
                 if state.can_burn_card() or state.can_deal_board():
+                    reveal_event = self._early_all_in_reveal_event()
+                    if reveal_event is not None:
+                        yield [reveal_event]
                     yield from ([e] for e in self._deal_next_street())
                     continue
                 yield from ([e] for e in self._finish_hand())
@@ -390,6 +557,40 @@ class GameSession:
             self._last_view = self._build_view()
             yield [{"type": "to_act", "uuid": uuid_, "view": self._last_view}]
             self._bot_act(seat_i, actor)
+
+    def _early_all_in_reveal_event(self) -> dict | None:
+        """Reveal every live hand once an all-in has closed future betting."""
+        if self._early_showdown_revealed or self._state is None:
+            return None
+        active_uuids = [self.seat_uuids[i] for i in self._pk_to_seat]
+        contenders = _showdown_contender_uuids(active_uuids, self._action_histories)
+        all_in = _all_in_uuids(self._action_histories) & contenders
+        if len(contenders) < 2 or not all_in:
+            return None
+
+        players_with_chips = 0
+        for pk_i, seat_i in enumerate(self._pk_to_seat):
+            if self.seat_uuids[seat_i] in contenders and self._state.stacks[pk_i] > 0:
+                players_with_chips += 1
+        if players_with_chips > 1:
+            return None
+
+        self._early_showdown_revealed = True
+        self._public_revealed_uuids = set(contenders)
+        revealed = {
+            uuid_: list(self._all_hole_cards_at_deal[uuid_])
+            for uuid_ in active_uuids
+            if uuid_ in contenders
+            and uuid_ != self.hero_uuid
+            and uuid_ in self._all_hole_cards_at_deal
+        }
+        return {
+            "type": "showdown_reveal",
+            "reason": "all_in",
+            "revealed": revealed,
+            "contenders": [uuid_ for uuid_ in active_uuids if uuid_ in contenders],
+            "all_in": [uuid_ for uuid_ in active_uuids if uuid_ in all_in],
+        }
 
     def _deal_next_street(self) -> list[dict]:
         """Deal the next community street and emit a new_street event."""
@@ -483,15 +684,16 @@ class GameSession:
         # Build final community cards (may be incomplete if hand ended early)
         community = pk_adapter.cards_to_strs(c for group in state.board_cards for c in group)
 
-        # Cards that PokerKit leaves visible after its show/muck automations.
-        # This is visibility data only; it is deliberately not used to decide
-        # whether the hand reached showdown.
         n_active = len(self._pk_to_seat)
-        hole_by_pk: dict[int, list[str]] = {}
+        # PokerKit's automatic mucking may clear losing cards before this method
+        # runs. The deal-time copy is the private source used to apply our
+        # explicit reveal policy; folded cards are never selected for output.
+        all_hole_by_pk: dict[int, list[str]] = {}
         for pk_i in range(n_active):
-            cards = state.hole_cards[pk_i]
+            uuid_ = self.seat_uuids[self._pk_to_seat[pk_i]]
+            cards = self._all_hole_cards_at_deal.get(uuid_)
             if cards:
-                hole_by_pk[pk_i] = pk_adapter.cards_to_strs(cards)
+                all_hole_by_pk[pk_i] = list(cards)
 
         # Capture payoffs and starting stacks for pot reconstruction
         payoffs = list(state.payoffs or [0] * n_active)
@@ -506,7 +708,7 @@ class GameSession:
         pot_winners = pk_adapter.pot_winners_from_payoffs(
             payoffs=payoffs,
             seat_uuids_for_pk=seat_uuids_for_pk,
-            hole_cards_by_pk_index=hole_by_pk,
+            hole_cards_by_pk_index=all_hole_by_pk,
             community=community,
             starting_stacks_by_pk=starting_stacks_pk,
         )
@@ -528,28 +730,65 @@ class GameSession:
         )
         had_showdown = len(showdown_contenders) >= 2
 
-        # Showdown metadata is emitted only for a real showdown.  A fold winner
-        # may still have cards present in PokerKit, but those cards stay hidden.
+        winner_set = set(winner_uuids)
+        for pot_result in pot_winners:
+            winner_set.update(pot_result.get("winners", []))
+        winner_uuids = [uuid_ for uuid_ in active_hand_uuids if uuid_ in winner_set]
+
+        visibility = _showdown_visibility_uuids(
+            contenders=showdown_contenders if had_showdown else set(),
+            winners=winner_set,
+            action_histories=self._action_histories,
+            active_uuids=active_hand_uuids,
+            button_uuid=self.seat_uuids[self._btn_pos],
+            mode=self.showdown_visibility,
+        )
+        live_visible = set(visibility["live"])
+        history_visible = set(visibility["history"])
+        all_in = set(visibility["all_in"])
+
+        # A player whose hand is public at the live table gets a hand label.
+        # The hero's own known hand may also be labelled even when it was mucked
+        # from the opponents' perspective.
         showdown = []
         hero_hole = list(self._hero_hole)  # internal format for evaluation
         if had_showdown:
-            for pk_i, hole in hole_by_pk.items():
-                seat_i = self._pk_to_seat[pk_i]
+            displayed = set(live_visible)
+            if self.hero_uuid in showdown_contenders:
+                displayed.add(self.hero_uuid)
+            for uuid_ in active_hand_uuids:
+                if uuid_ not in displayed:
+                    continue
+                hole = self._all_hole_cards_at_deal.get(uuid_)
+                if not hole:
+                    continue
                 best = pk_adapter.best_five(hole, community)
                 showdown.append({
-                    "uuid": self.seat_uuids[seat_i],
+                    "uuid": uuid_,
                     "hand_label": best["label"],
                     "best_cards": best["cards"],
                 })
 
-        # Revealed: opponents' cards at showdown (exclude hero)
-        revealed = (
-            {
-                self.seat_uuids[self._pk_to_seat[pk_i]]: hole
-                for pk_i, hole in hole_by_pk.items()
-                if self._pk_to_seat[pk_i] != self.hero_index
-            }
-            if had_showdown else {}
+        revealed = {
+            uuid_: list(self._all_hole_cards_at_deal[uuid_])
+            for uuid_ in active_hand_uuids
+            if uuid_ in live_visible
+            and uuid_ != self.hero_uuid
+            and uuid_ in self._all_hole_cards_at_deal
+        }
+        history_revealed = {
+            uuid_: list(self._all_hole_cards_at_deal[uuid_])
+            for uuid_ in active_hand_uuids
+            if uuid_ in history_visible
+            and uuid_ != self.hero_uuid
+            and uuid_ in self._all_hole_cards_at_deal
+        }
+        terminal_statuses = _terminal_statuses(
+            dealt_uuids=active_hand_uuids,
+            contenders=showdown_contenders,
+            winners=winner_set,
+            live_revealed=live_visible,
+            all_in=all_in,
         )
 
         # Record hand result
@@ -569,20 +808,32 @@ class GameSession:
             winner_dicts,
             hand_info,
             round_state_dict,
-            revealed_uuids=set(revealed),
+            revealed_uuids=(
+                history_visible | ({self.hero_uuid} if self.hero_uuid in showdown_contenders else set())
+            ),
             had_showdown=had_showdown,
         )
 
         # Build the view with hero hole cards preserved
         final_view = self._build_view(hero_hole_override=hero_hole, community_override=community)
+        for seat in final_view.get("seats", []):
+            terminal = terminal_statuses.get(seat["uuid"])
+            if terminal is None:
+                continue
+            seat["terminal_status"] = terminal
+            # PokerKit marks terminal showdown states inactive. Preserve only
+            # explicit folds as folded so a showdown is never rendered as one.
+            seat["state"] = "folded" if terminal["status"] == "fold" else "participating"
         self._last_view = final_view
 
         out = [{
             "type": "round_finish",
             "winners": winner_uuids,
             "revealed": revealed,
+            "history_revealed": history_revealed,
             "pot_winners": pot_winners,
             "showdown": showdown,
+            "terminal_statuses": terminal_statuses,
             "view": final_view,
         }]
 
@@ -591,7 +842,10 @@ class GameSession:
         # Check if game is over
         players_with_chips = sum(1 for s in self._stacks if s > 0)
         hero_busted = self._stacks[self.hero_index] == 0
-        if self._hand_num >= self.config.max_round or players_with_chips <= 1 or hero_busted:
+        can_rebuy = self.config.game_format == "cash" and any(
+            spec.is_bot and i != self.hero_index for i, spec in enumerate(self.config.seats)
+        )
+        if self._hand_num >= self.config.max_round or (players_with_chips <= 1 and not can_rebuy) or hero_busted:
             self.finished = True
             final_players = [
                 {"name": self.config.seats[i].name, "stack": self._stacks[i]}
@@ -606,7 +860,7 @@ class GameSession:
     # -- view / serialization ------------------------------------------------
 
     def _build_view(self, hero_hole_override: list[str] | None = None, community_override: list[str] | None = None) -> dict:
-        return build_view(
+        view = build_view(
             config=self.config,
             state=self._state,
             seat_uuids=self.seat_uuids,
@@ -623,9 +877,17 @@ class GameSession:
             hand_num=self._hand_num,
             hero_hole=self._hero_hole,
             board=self._board,
+            action_histories=self._action_histories,
             hero_hole_override=hero_hole_override,
             community_override=community_override,
         )
+        for seat in view.get("seats", []):
+            uuid_ = seat["uuid"]
+            if uuid_ in self._public_revealed_uuids and uuid_ != self.hero_uuid:
+                cards = self._all_hole_cards_at_deal.get(uuid_)
+                if cards:
+                    seat["hole_cards"] = list(cards)
+        return view
 
     def _build_valid_actions(self, pk_index: int) -> list[dict]:
         state = self._state
@@ -733,6 +995,25 @@ class GameSession:
         action, amount = self._validate_action(action, amount)
         self._apply_action(action, amount, actor_pk=self._hero_pk_index)
         return self._advance_gen()
+
+    def finish_early(self) -> list[dict]:
+        """End the session cleanly without persisting an unfinished hand.
+
+        Completed hands have already updated ``self._stacks`` and are buffered
+        by the recorder. The active PokerKit state only contains transient
+        actions from the unfinished hand, so dropping it restores the last
+        completed-hand stacks and lets the normal persistence path close the
+        game without manufacturing a partial hand history.
+        """
+        if self.finished:
+            return []
+        self.finished = True
+        self._pending_ask = None
+        self._state = None
+        return [
+            {"name": self.config.seats[index].name, "stack": self._stacks[index]}
+            for index in range(len(self.config.seats))
+        ]
 
     # -- persistence ---------------------------------------------------------
 

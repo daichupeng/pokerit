@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, WebSocket, status
+from starlette.requests import HTTPConnection
 from sqlalchemy.orm import Session
 
 from poker_engine.db.base import SessionLocal
@@ -21,7 +22,7 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
-def current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
+def current_user(request: HTTPConnection, db: Session = Depends(get_db)) -> User | None:
     """The logged-in user from the session cookie, or None."""
     uid = request.session.get(SESSION_USER_KEY)
     if not uid:
@@ -37,3 +38,9 @@ def require_user(user: User | None = Depends(current_user)) -> User:
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
     return user
+
+
+def websocket_user(websocket: WebSocket) -> User | None:
+    """Authenticate once without holding a DB connection for the whole game."""
+    with SessionLocal() as db:
+        return current_user(websocket, db)

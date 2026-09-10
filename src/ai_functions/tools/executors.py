@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from poker_engine import pk_adapter, stats
 from poker_engine.db.models import User
+from shared_services.range_equity import calculate_range_equity
 
 
 def make_hand_lookup_tool(db: Session, game_id: str, user: User) -> Callable[[int], dict]:
@@ -39,6 +40,55 @@ def make_equity_calculator_tool() -> Callable[[list[str], list[str], int], dict]
         }
 
     return _equity_calculator
+
+
+def make_range_equity_calculator_tool(
+    hole: list[str],
+    board: list[str],
+    allowed_earlier_streets: set[str] | None = None,
+) -> Callable[..., dict]:
+    """Bind live cards in code so the model can only supply range assumptions."""
+    bound_hole = list(hole)
+    bound_board = list(board)
+
+    def _range_equity_calculator(
+        villain_ranges: list[dict], board_street: str = "current",
+    ) -> dict:
+        street_lengths = {"flop": 3, "turn": 4, "river": 5}
+        if board_street == "current":
+            selected_board = bound_board
+            analysis_street = {3: "flop", 4: "turn", 5: "river"}.get(
+                len(bound_board), "unavailable",
+            )
+        elif board_street in street_lengths:
+            target_length = street_lengths[board_street]
+            if target_length > len(bound_board):
+                return {
+                    "status": "error",
+                    "error": f"board_street_unavailable:{board_street}",
+                }
+            if (
+                target_length < len(bound_board)
+                and allowed_earlier_streets is not None
+                and board_street not in allowed_earlier_streets
+            ):
+                return {
+                    "status": "error",
+                    "error": f"board_street_not_requested:{board_street}",
+                }
+            selected_board = bound_board[:target_length]
+            analysis_street = board_street
+        else:
+            return {
+                "status": "error",
+                "error": f"invalid_board_street:{board_street}",
+            }
+
+        result = calculate_range_equity(bound_hole, selected_board, villain_ranges)
+        result["analysis_street"] = analysis_street
+        return result
+
+    return _range_equity_calculator
 
 
 def make_pot_odds_tool() -> Callable[[int, int], dict]:

@@ -14,7 +14,9 @@ SYSTEM_PROMPT = """You summarize a deterministic poker statistics history report
 All percentages, sample statuses, trend directions, leak tags, and severities have
 already been computed by code. Never calculate, alter, add, or imply a leak that
 is not in deterministic_stat_leaks. Never imply a conclusion for a metric marked
-insufficient_sample. Do not mention individual hands or citations. Clearly call
+insufficient_sample. A descriptive metric has no calibrated benchmark: describe
+its values without calling its movement improvement, deterioration, or a leak.
+Do not mention individual hands or citations. Clearly call
 the latest-game values current-game observations and rolling-window leaks
 rolling-history conclusions. Return JSON only:
 {"summary":"...","sections":[{"tag":"existing tag","narrative":"..."}]}

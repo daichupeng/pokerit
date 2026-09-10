@@ -1,6 +1,6 @@
 # Poker Trainer
 
-Current release: **v0.2.0** — 2026-07-29
+Current release: **v0.3.1** — 2026-09-03
 
 A local-first No-Limit Hold'em training application built with
 [PokerKit](https://github.com/uoftcprg/pokerkit), FastAPI, PostgreSQL, and LLM-
@@ -20,6 +20,8 @@ map of the changes relative to upstream.
   big-blind ante, or a custom fixed-level game.
 - Practice against deterministic archetype bots or LLM-powered opponents.
 - Ask a concise, scenario-aware AI coach during play or from a saved hand.
+- Optionally ground 6-max 100BB cash preflop coaching in PokerAI's presolved
+  strategy API, with bundled RFI charts retained as the offline fallback.
 - Save every completed hand incrementally instead of waiting for a game to end.
 - Run a structured single-game review using future-clipped Decision Snapshots.
 - Track scope-isolated coaching profiles and rolling statistics over up to 500
@@ -72,6 +74,44 @@ user-supplied reads, and actual solver evidence.
 `AI GTO` is a configured simulation style; it is never presented as proof that
 a solver node was queried.
 
+For heads-up postflop equity questions during a live training hand, the coach
+can run an exact enumerator against one to three explicit opponent-range
+scenarios. Hero cards and board cards are bound from the engine, and an earlier
+flop or turn board can be selected only when the user asks for that street. The
+reply shows the range assumptions, legal and blocked combo counts, enumerated
+outcomes, per-scenario equity, and the resulting scenario interval. The math is
+labelled `Exact math`; the chosen opponent ranges remain `AI strategy judgment`,
+not recorded facts or solver output. PokerAI preflop evidence is never reused as
+a postflop opponent range.
+
+#### Optional higher-fidelity preflop evidence
+
+For more precise **6-max 100BB cash** preflop frequencies and action lines beyond
+RFI, create a personal key at [PokerAI](https://pokerai.bet/console) and set
+`POKERAI_API_KEY` in `.env`. This integration is optional: when the key is
+missing, a request fails, or a spot is unsupported, Pokerit falls back to its
+bundled versioned RFI chart when one matches and otherwise uses clearly labelled
+AI strategy judgment.
+
+Folds before Hero leave an unopened pot classified as RFI; a Limp node requires
+an actual call before any raise.
+
+PokerAI preflop is a millisecond lookup over a fixed presolved pack, not a live
+preflop solve. Its frequencies do not adapt to the observed raise size. Pokerit
+therefore labels successful results as `Preflop strategy API`, records the
+provider/version/node assumptions, and does not present them as a live `Solver
+result`. The live coach queries only when the user asks during a current Hero
+preflop decision, caches repeated questions at the same node, and allows at
+most **two distinct Hero decision lookups per hand**. A single-game review
+selects at most **15** additional preflop decisions overall and at most two per
+hand; other decisions continue to use local charts or AI judgment. Use this
+integration only inside Pokerit's simulated training and review workflows,
+never as assistance at a real-money table.
+
+The bundled charts remain available in all cases and are also linked into live
+coaching for matching RFI nodes. They do not contain exact mixed frequencies,
+and the derived cash 8-max and MTT 6-max packs retain their derivation warning.
+
 ### Single-game evaluation
 
 `Evaluate Game` runs asynchronously through Redis/arq:
@@ -107,11 +147,13 @@ defined as `(postflop bets + raises) / postflop calls`.
 ### Leak thresholds and sample handling
 
 Leak thresholds are centralized, scenario-specific, and versioned. The current
-development profile is `2026-07-23.v3` and uses a deliberately permissive
-minimum of five relevant opportunities for each deterministic metric. Below
-that floor the UI shows `insufficient sample` and code emits no statistical
-leak. Findings that clear five opportunities should still be interpreted as
-early signals, not settled long-term conclusions.
+development profile is `2026-08-31.v6`. Most deterministic metrics use a
+deliberately permissive minimum of five relevant opportunities; VPIP leak tags
+require at least 50 supported hands and use hands-weighted references when a
+session spans multiple table sizes. Below a metric's floor the UI shows
+`insufficient sample` and code emits no statistical leak. Findings that clear a
+floor should still be interpreted as session signals, not settled long-term or
+player-pool conclusions.
 
 The 15BB Push/Fold profile disables postflop statistical leak tags and instead
 prioritizes descriptive open-shove, reshove, and call-off statistics plus
@@ -125,6 +167,20 @@ discard, restore, dispute, regression, and reset workflows. Cash, MTT, table
 size, and stack-depth profiles remain isolated; legacy 6-max MTT history is not
 silently reclassified as new 8-max data.
 
+Re-evaluating one game replaces its older eligible evaluation in the profile;
+it never counts as another independent game. Profile updates are serialized
+across the web app and worker. Profile reads recompute deterministic state,
+so previously inflated counts no longer appear; an outdated playstyle summary
+is hidden until the next successful profile refresh.
+
+Custom games are grouped by format, starting table size, exact starting stack
+in BB, ante type/size, and tournament-stage setting. Their statistics remain
+descriptive: no calibrated statistical leak threshold is currently applied.
+Existing custom hand histories are grouped from their saved settings without
+rewriting the database. Old mixed-scope reports remain readable, but must be
+re-evaluated before contributing to a new custom profile. The profile selector
+shows each custom group after it has a saved game.
+
 ## Quick start with Docker
 
 ### Prerequisites
@@ -132,6 +188,8 @@ silently reclassified as new 8-max data.
 - Docker Desktop
 - A Google OAuth web client
 - An OpenAI API key for the current default AI models
+- Optional: a personal PokerAI API key for higher-fidelity 6-max 100BB cash
+  preflop evidence
 
 ### 1. Configure the environment
 
@@ -146,6 +204,8 @@ GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 SESSION_SECRET=...
 OPENAI_API_KEY=...
+# Optional; obtain your own key from https://pokerai.bet/console
+POKERAI_API_KEY=...
 APP_BASE_URL=http://localhost:8000
 ```
 
@@ -228,27 +288,76 @@ modules; they are not selected by an environment variable. GPT-5 reasoning
 models are called without unsupported temperature parameters, and tool-bearing
 Chat Completions requests use `reasoning_effort="none"` for compatibility.
 
+### Optional PokerAI preflop reference
+
+`POKERAI_API_KEY` is a per-installation secret and is never stored in Git. Each
+local machine or deployed environment must configure its own key. Multiple
+machines using the same key share that provider account's quota. An optional
+`POKERAI_PREFLOP_VERSION` selects the fixed pack and defaults to `6max`.
+Changes to `.env` take effect when the app and worker containers next start;
+recreate those two services after adding or replacing a key in a running setup.
+
+The integration applies to 6-max, no-ante cash hands at any positive stack
+depth. Returned frequencies still belong to the selected fixed-depth pack;
+they are not recalculated for the actual stacks. The coach receives each
+remaining opponent's effective starting stack and its BB/percentage difference
+from the reference. It explains possible directional effects as AI strategy
+judgment, with uncertainty, rather than inventing adjusted frequencies or EV
+loss. Missing opponent stacks are reported as unknown. Existing node caching
+and request caps still apply. It
+uses the single-hand endpoint for Hero's first decision and the whole-range
+endpoint for a later Hero re-decision, then extracts only the current hand's
+frequencies. Live coaching and post-game evaluation each allow at most two
+distinct decision lookups per hand; post-game evaluation also keeps its
+15-call game-level cap. Returned evidence records the endpoint and node used.
+Never commit a real PokerAI key or distribute the provider's solution data.
+
 ### Account preferences
 
-Account Settings stores versioned quick-bet shortcuts used by newly created
-games. Defaults are:
+Account Settings stores versioned quick-bet shortcuts and showdown visibility
+used by newly created games. Defaults are:
 
 - preflop: `2.0`, `2.5`, `6.0`, `7.5` BB;
-- postflop: `33`, `50`, `65`, `100` percent pot.
+- postflop: `33`, `50`, `65`, `100` percent pot;
+- showdown visibility: `Realistic`, which follows normal show/muck order.
+
+`Training` showdown visibility makes every bot that reaches showdown table its
+hand. In either mode, a called all-in tables every live hand before the board
+runs out, and folded hands remain hidden. In `Realistic` mode, cards that are
+inspectable after calling the final river bet remain available in the saved
+hand history even if that hand was mucked at the live table.
 
 Legacy per-game API overrides remain accepted.
 
+Live WebSocket play and live-coach requests require the game owner's signed-in
+account. Browser WebSocket connections also validate the configured application
+origin. New Compose containers publish the app, PostgreSQL and pgAdmin on
+`127.0.0.1` only; an existing container keeps its old port binding until it is
+recreated. Do this between games.
+
 ## Data persistence and privacy
 
+- In cash games, busted bots buy in for the configured starting amount before
+  the next hand, maintaining the table size. Hero busting or the hand limit
+  still ends the game; tournament scenarios keep elimination behavior.
+  Buy-ins are fresh capital, not winnings: profit/loss is summed per completed
+  hand. The next-hand table message identifies bots that bought in.
 - Source code lives in the repository directory.
 - PostgreSQL data lives in the Docker volume `pgdata`.
-- Games are created in the database at session start, and every completed hand
-  is flushed incrementally. A service interruption can lose the hand currently
-  in progress, but already completed hands remain stored.
+- Games are created on their first successful save, and every completed hand
+  is flushed incrementally. A failed transaction leaves completed hands eligible
+  for retry; retrying also reconciles a commit whose acknowledgement was lost.
+- If saving fails, the table exposes **Retry save**. A final-save failure keeps
+  the finished session in memory until saving succeeds. Keep the page/app open
+  and retry before restarting: this retry buffer does not survive an app restart.
+  Successfully committed hands remain stored.
 - Normal restarts, Mac sleep/wake, and `docker compose down` do not remove the
   database volume.
-- The browser receives only the hero's cards and opponent cards actually
-  revealed at showdown.
+- The browser receives only the hero's cards and opponent cards allowed by the
+  showdown visibility contract: live tabled hands plus completed-hand cards
+  available after a final-river call. Folded cards are never included.
+- Once a called all-in closes all future betting, every live hand is revealed
+  before the remaining board runs out.
 - Fold winners are not classified as showdowns, and hidden opponent cards are
   removed during the visibility-correction migrations.
 
@@ -315,6 +424,9 @@ uv run pytest -q
   tournament lifecycle or an ICM engine.
 - The versioned range knowledge base currently covers RFI only. It fails closed
   outside matching format, table-size, stack, ante, position, and node data.
+- PokerAI's optional preflop endpoint currently covers fixed 6-max packs and is
+  sizing-insensitive; unsupported spots and provider failures fail closed to the
+  bundled RFI pack or AI strategy judgment.
 - Derived position mappings do not model card bunching.
 - LLM outputs remain probabilistic; deterministic stats, tags, citations,
   thresholds, and evidence labels are kept in code to limit that risk.

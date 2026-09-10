@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from poker_engine.scenarios import is_custom_profile_scope
+
 from ai_functions.game_review.leak_taxonomy import (
     EP_POSITIONS,
     LP_POSITIONS,
@@ -27,7 +29,7 @@ class MetricSpec:
 METRICS = (
     MetricSpec("vpip", ("vpip",), "pct", MIN_OPPORTUNITY_FLOOR, ("low_vpip", "high_vpip")),
     MetricSpec("pfr", ("pfr",), "pct", MIN_OPPORTUNITY_FLOOR, ("limps_too_wide",)),
-    MetricSpec("limp", ("limp",), "pct", MIN_OPPORTUNITY_FLOOR, ("limps_too_wide",)),
+    MetricSpec("open_limp", ("open_limp",), "pct", MIN_OPPORTUNITY_FLOOR, ("limps_too_wide",)),
     MetricSpec("three_bet", ("three_bet",), "pct", MIN_OPPORTUNITY_FLOOR, ("under_3bet", "over_3bet")),
     MetricSpec("fold_to_3bet", ("fold_to_3bet",), "pct", MIN_OPPORTUNITY_FLOOR, ("overfolds_to_3bet",)),
     MetricSpec("aggression_factor", ("aggression_factor",), "ratio", MIN_OPPORTUNITY_FLOOR,
@@ -113,7 +115,7 @@ def _value(node: dict, spec: MetricSpec):
 
 
 def _distance_to_healthy(value: float, spec: MetricSpec, profile: ThresholdProfile) -> float:
-    if spec.metric == "limp":
+    if spec.metric == "open_limp":
         return max(0.0, value - profile.gap_moderate)
     if spec.metric == "positional_gap":
         return max(0.0, profile.positional_moderate - value)
@@ -128,6 +130,8 @@ def _distance_to_healthy(value: float, spec: MetricSpec, profile: ThresholdProfi
 
 
 def enabled_metric_specs(profile: ThresholdProfile) -> tuple[MetricSpec, ...]:
+    if is_custom_profile_scope(profile.key):
+        return METRICS + PUSH_FOLD_METRICS
     enabled = tuple(
         spec for spec in METRICS
         if any(tag in profile.enabled_stat_tags for tag in spec.tags)
@@ -139,6 +143,7 @@ def enabled_metric_specs(profile: ThresholdProfile) -> tuple[MetricSpec, ...]:
 
 def compare_latest_to_baseline(current: dict, baseline: dict, profile: ThresholdProfile) -> list[dict]:
     comparisons = []
+    descriptive = is_custom_profile_scope(profile.key)
     for spec in enabled_metric_specs(profile):
         current_node = _node(current, spec)
         baseline_node = _node(baseline, spec)
@@ -149,11 +154,17 @@ def compare_latest_to_baseline(current: dict, baseline: dict, profile: Threshold
         current_infinite = bool(current_node.get("infinite"))
         baseline_infinite = bool(baseline_node.get("infinite"))
 
-        status = "insufficient_sample"
+        status = "descriptive" if descriptive else "insufficient_sample"
+        if descriptive:
+            for sample in (current_sample, baseline_sample):
+                sample.update(required=None, status="descriptive")
         delta = None
         current_known = current_value is not None or current_infinite
         baseline_known = baseline_value is not None or baseline_infinite
-        if current_sample["status"] == baseline_sample["status"] == "ready" \
+        if descriptive:
+            if current_value is not None and baseline_value is not None:
+                delta = round(current_value - baseline_value, 2)
+        elif current_sample["status"] == baseline_sample["status"] == "ready" \
                 and current_known and baseline_known:
             current_numeric = float("inf") if current_infinite else current_value
             baseline_numeric = float("inf") if baseline_infinite else baseline_value
@@ -190,5 +201,11 @@ def history_sample_status(display: dict, profile: ThresholdProfile) -> dict:
     metrics = []
     for spec in enabled_metric_specs(profile):
         node = _node(display, spec)
-        metrics.append({"metric": spec.metric, **_sample(node, spec), "snapshot": node})
-    return {"profile": profile.key, "version": profile.version, "metrics": metrics}
+        sample = _sample(node, spec)
+        if is_custom_profile_scope(profile.key):
+            sample.update(required=None, status="descriptive")
+        metrics.append({"metric": spec.metric, **sample, "snapshot": node})
+    result = {"profile": profile.key, "version": profile.version, "metrics": metrics}
+    if is_custom_profile_scope(profile.key):
+        result["benchmark_status"] = "unavailable_descriptive_statistics_only"
+    return result

@@ -39,7 +39,7 @@ def test_create_list_get_and_status_history_evaluation(db_session, monkeypatch):
 
         evaluation = db_session.get(HistoryEvaluation, evaluation_id)
         assert evaluation.status == EvaluationStatus.PENDING
-        assert evaluation.threshold_version == "2026-07-23.v3"
+        assert evaluation.threshold_version == "2026-08-31.v6"
 
         listed = client.get("/api/profile/history-evaluations?scope=cash_6max_100bb")
         assert listed.status_code == 200

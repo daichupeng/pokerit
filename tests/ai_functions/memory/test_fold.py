@@ -226,3 +226,145 @@ def test_discarded_evaluation_excluded_from_rebuild(db_session):
 
     state = rebuild_profile(db, user.id)
     assert state["evaluations_folded"] == 0
+
+
+def test_actual_fold_path_supersedes_rerun_and_repairs_stale_profile(db_session, monkeypatch):
+    import asyncio
+    from ai_functions.memory.persistence import build_profile_context, fold_and_persist
+
+    async def summary(*args, **kwargs): return "Current summary"
+    monkeypatch.setattr("ai_functions.memory.playstyle.generate_playstyle_summary", summary)
+    user = _make_user(db_session, "rerun-real@test.local")
+    game = _make_game(db_session, user)
+    now = datetime.now(timezone.utc)
+    first = _make_evaluation(db_session, user, game, now, [_leak("missed_fold")])
+    db_session.commit()
+    asyncio.run(fold_and_persist(db_session, first))
+    second = _make_evaluation(db_session, user, game, now + timedelta(minutes=1), [_leak("missed_fold")])
+    db_session.commit()
+    profile = asyncio.run(fold_and_persist(db_session, second))
+    assert profile.evaluations_folded == 1
+    assert profile.leaks[0]["occurrences"] == 1
+    assert profile.leaks[0]["status"] == "flagged"
+    assert rebuild_profile(db_session, user.id) == {
+        "evaluations_folded": profile.evaluations_folded, "leaks": profile.leaks,
+    }
+    # Old installations may have already stored inflated counters/prose.
+    profile.evaluations_folded = 2
+    profile.leaks = [{**profile.leaks[0], "occurrences": 2, "status": "confirmed"}]
+    db_session.commit()
+    context = build_profile_context(db_session, user.id)
+    assert context["evaluations_folded"] == 1
+    assert context["leaks"][0]["status"] == "flagged"
+    assert context["playstyle_summary"] == ""
+
+
+def test_concurrent_profile_updates_serialize_and_keep_both_games(db_engine, monkeypatch):
+    import asyncio
+    from uuid import uuid4
+    from sqlalchemy import delete, select
+    from sqlalchemy.orm import Session
+    from poker_engine.db.models import PlayerProfile
+    from ai_functions.memory.persistence import fold_and_persist
+
+    # Independent committed sessions are necessary to exercise a real DB lock.
+    # These rows live only in the dedicated test database and are removed below.
+    user_id = None
+    async def run():
+        nonlocal user_id
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        second_attempted = asyncio.Event()
+        calls = []
+        async def summary(state, trends):
+            calls.append(state["evaluations_folded"])
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+            return "summary"
+        monkeypatch.setattr("ai_functions.memory.playstyle.generate_playstyle_summary", summary)
+        with Session(db_engine, expire_on_commit=False) as first_db, Session(db_engine, expire_on_commit=False) as second_db:
+            user = _make_user(first_db, f"concurrent-{uuid4()}@test.local")
+            user_id = user.id
+            first = _make_evaluation(first_db, user, _make_game(first_db, user),
+                                     datetime.now(timezone.utc), [_leak("missed_fold")])
+            first_db.commit()
+            first_task = asyncio.create_task(fold_and_persist(first_db, first))
+            second_task = None
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                second_user = second_db.get(User, user_id)
+                second = _make_evaluation(second_db, second_user, _make_game(second_db, second_user),
+                                          datetime.now(timezone.utc), [_leak("bad_bluff_spot")])
+                second_db.commit()
+                original_execute = second_db.execute
+                loop = asyncio.get_running_loop()
+                def execute(statement, *args, **kwargs):
+                    if "pg_try_advisory_xact_lock" in str(statement):
+                        loop.call_soon_threadsafe(second_attempted.set)
+                    return original_execute(statement, *args, **kwargs)
+                second_db.execute = execute
+                second_task = asyncio.create_task(fold_and_persist(second_db, second))
+                await asyncio.wait_for(second_attempted.wait(), 5)
+                assert calls == [1]
+                release.set()
+                await asyncio.wait_for(asyncio.gather(first_task, second_task), 5)
+                second_db.expire_all()
+                profile = second_db.get(PlayerProfile, (user_id, "cash_6max_100bb"))
+                assert profile.evaluations_folded == 2
+                assert {leak["tag"] for leak in profile.leaks} == {"missed_fold", "bad_bluff_spot"}
+            finally:
+                release.set()
+                await asyncio.gather(first_task, *([second_task] if second_task else []), return_exceptions=True)
+    try:
+        asyncio.run(run())
+    finally:
+        if user_id:
+            with Session(db_engine) as cleanup:
+                game_ids = select(Game.id).where(Game.hero_user_id == user_id)
+                cleanup.execute(delete(GameEvaluation).where(GameEvaluation.user_id == user_id))
+                cleanup.execute(delete(PlayerProfile).where(PlayerProfile.user_id == user_id))
+                cleanup.execute(delete(GamePlayer).where(GamePlayer.game_id.in_(game_ids)))
+                cleanup.execute(delete(Game).where(Game.hero_user_id == user_id))
+                cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.commit()
+
+
+def test_cancelled_profile_lock_wait_rolls_back_and_leaves_session_usable(db_engine):
+    import asyncio
+    import hashlib
+    from uuid import uuid4
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+    from ai_functions.memory.persistence import rebuild_and_persist
+
+    async def run():
+        user_id = uuid4()
+        key = int.from_bytes(
+            hashlib.sha256(f"profile:{user_id}:cash_6max_100bb".encode()).digest()[:8],
+            "big", signed=True,
+        )
+        attempted = asyncio.Event()
+        with Session(db_engine) as holder, Session(db_engine) as waiter:
+            holder.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+            original_execute = waiter.execute
+            def execute(statement, *args, **kwargs):
+                result = original_execute(statement, *args, **kwargs)
+                if "pg_try_advisory_xact_lock" in str(statement):
+                    attempted.set()
+                return result
+            waiter.execute = execute
+            task = asyncio.create_task(rebuild_and_persist(waiter, user_id))
+            try:
+                await asyncio.wait_for(attempted.wait(), 5)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert task.cancelled()
+            assert not waiter.in_transaction()
+            assert waiter.scalar(text("SELECT 1")) == 1
+            holder.rollback()
+            assert waiter.execute(
+                text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}
+            ).scalar_one()
+    asyncio.run(run())

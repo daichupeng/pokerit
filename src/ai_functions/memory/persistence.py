@@ -6,12 +6,15 @@ logic stays pure and DB-free.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from poker_engine.db.models import EvaluationStatus, GameEvaluation, PlayerProfile
-from poker_engine.scenarios import DEFAULT_PROFILE_SCOPE, profile_scope_for_game
+from poker_engine.scenarios import DEFAULT_PROFILE_SCOPE, is_custom_profile_scope, profile_scope_for_game
 
 
 def _now():
@@ -42,15 +45,17 @@ def query_folded_evaluations(
         evaluation
         for evaluation in db.execute(query).scalars().all()
         if profile_scope_for_game(evaluation.game) == scope_key
+        and (not is_custom_profile_scope(scope_key) or
+             ((evaluation.stats_snapshot or {}).get("threshold_profile") or {}).get("key") == scope_key)
     ]
 
     latest_by_game: dict = {}
     for evaluation in candidates:
         current = latest_by_game.get(evaluation.game_id)
-        if current is None or evaluation.completed_at > current.completed_at:
+        if current is None or (evaluation.completed_at, str(evaluation.id)) > (current.completed_at, str(current.id)):
             latest_by_game[evaluation.game_id] = evaluation
 
-    return sorted(latest_by_game.values(), key=lambda e: e.completed_at)
+    return sorted(latest_by_game.values(), key=lambda e: (e.completed_at, str(e.id)))
 
 
 def evaluation_to_fold_input(evaluation: GameEvaluation) -> dict:
@@ -108,18 +113,24 @@ def build_profile_context(
     the key entirely (decision 4: read BEFORE this evaluation's own fold).
     """
     from ai_functions.memory.trends import compute_trends
+    from ai_functions.memory.fold import EMPTY_PROFILE_STATE, fold_evaluation
 
     row = load_profile_row(db, user_id, scope_key)
-    if row is None or not row.evaluations_folded:
+    folded = query_folded_evaluations(db, user_id, row.reset_at if row else None, scope_key)
+    if not folded:
         return None
-
-    folded = query_folded_evaluations(db, user_id, row.reset_at, scope_key)
+    state = dict(EMPTY_PROFILE_STATE)
+    for evaluation in folded:
+        state = fold_evaluation(state, evaluation_to_fold_input(evaluation))
+    summary_is_current = row is not None and (
+        row.evaluations_folded == state["evaluations_folded"] and row.leaks == state["leaks"]
+    )
     snapshots = [(e.stats_snapshot or {}).get("game_level") or {} for e in folded]
     return {
-        "evaluations_folded": row.evaluations_folded,
-        "leaks": row.leaks,
+        "evaluations_folded": state["evaluations_folded"],
+        "leaks": state["leaks"],
         "trends": compute_trends(snapshots),
-        "playstyle_summary": row.playstyle_summary,
+        "playstyle_summary": row.playstyle_summary if summary_is_current else "",
         "profile_scope": scope_key,
     }
 
@@ -146,24 +157,9 @@ async def _regenerate_and_save(
 
 
 async def fold_and_persist(db, evaluation: GameEvaluation) -> PlayerProfile:
-    """Fold one just-completed evaluation into its user's profile
-    incrementally, regenerate the summary, and persist. The cheap day-to-day
-    path (decision 3) — corrections always use ``rebuild_and_persist``
-    instead so every correction trivially equals a from-scratch rebuild.
-    """
-    from ai_functions.memory.fold import EMPTY_PROFILE_STATE, fold_evaluation
-
-    scope_key = profile_scope_for_game(evaluation.game)
-    existing_row = load_profile_row(db, evaluation.user_id, scope_key)
-    state = (
-        {"evaluations_folded": existing_row.evaluations_folded, "leaks": existing_row.leaks}
-        if existing_row is not None
-        else dict(EMPTY_PROFILE_STATE)
-    )
-    reset_at = existing_row.reset_at if existing_row is not None else None
-    next_state = fold_evaluation(state, evaluation_to_fold_input(evaluation))
-    return await _regenerate_and_save(
-        db, evaluation.user_id, next_state, reset_at=reset_at, scope_key=scope_key
+    """Refresh from the latest eligible evaluation per game, including re-runs."""
+    return await rebuild_and_persist(
+        db, evaluation.user_id, scope_key=profile_scope_for_game(evaluation.game)
     )
 
 
@@ -179,10 +175,26 @@ async def rebuild_and_persist(
     """
     from ai_functions.memory.fold import rebuild_profile
 
-    if reset_at is None:
-        existing = load_profile_row(db, user_id, scope_key)
-        reset_at = existing.reset_at if existing else None
-    state = rebuild_profile(db, user_id, reset_at=reset_at, scope_key=scope_key)
-    return await _regenerate_and_save(
-        db, user_id, state, reset_at=reset_at, scope_key=scope_key
+    # Transaction-scoped across both the web app and workers, even before the
+    # first profile row exists. Poll without blocking the event loop or moving
+    # the session to a thread that could outlive cancellation and rollback.
+    lock_key = int.from_bytes(
+        hashlib.sha256(f"profile:{user_id}:{scope_key}".encode()).digest()[:8],
+        byteorder="big", signed=True,
     )
+    try:
+        while not db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": lock_key}
+        ).scalar_one():
+            await asyncio.sleep(0.05)
+        db.expire_all()
+        if reset_at is None:
+            existing = load_profile_row(db, user_id, scope_key)
+            reset_at = existing.reset_at if existing else None
+        state = rebuild_profile(db, user_id, reset_at=reset_at, scope_key=scope_key)
+        return await _regenerate_and_save(
+            db, user_id, state, reset_at=reset_at, scope_key=scope_key
+        )
+    except BaseException:
+        db.rollback()
+        raise

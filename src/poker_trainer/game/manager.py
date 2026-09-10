@@ -25,6 +25,13 @@ class SessionManager:
     def get(self, game_id: str) -> GameSession | None:
         return self._sessions.get(game_id)
 
+    def get_owned(self, game_id: str, user_id) -> GameSession | None:
+        session = self.get(game_id)
+        owner = getattr(session, "owner_user_id", None)
+        if owner is None or user_id is None or str(owner) != str(user_id):
+            return None
+        return session
+
     def lock(self, game_id: str) -> asyncio.Lock:
         return self._locks.setdefault(game_id, asyncio.Lock())
 

@@ -14,7 +14,7 @@ from ai_functions.history_evaluation.analytics import compare_latest_to_baseline
 from ai_functions.history_evaluation.synthesis import synthesize
 from poker_engine.db.base import SessionLocal
 from poker_engine.db.models import EvaluationStatus, Game, Hand, HistoryEvaluation
-from poker_engine.scenarios import profile_scope_for_game
+from poker_engine.scenarios import custom_profile_label, is_custom_profile_scope, profile_scope_for_game, profile_scope_label
 from poker_engine.stats import RawStatCounts, compute_hand_stats, to_display
 
 
@@ -116,6 +116,11 @@ def build_history_snapshot(db, evaluation: HistoryEvaluation) -> dict:
     cutoff = rolling_pairs[0][0].created_at if rolling_pairs else None
 
     return {
+        "scope_label": (
+            custom_profile_label(games[latest_game_id])
+            if latest_game_id is not None and is_custom_profile_scope(evaluation.scope_key)
+            else profile_scope_label(evaluation.scope_key)
+        ),
         "latest_game_id": latest_game_id,
         "cutoff_at": cutoff,
         "games_included": len({hand.game_id for hand, _ in rolling_pairs}),
@@ -160,6 +165,7 @@ async def run_history_evaluation(ctx, evaluation_id: str) -> None:
 
         deterministic_payload = {
             "scope": evaluation.scope_key,
+            "scope_label": result["scope_label"],
             "window": evaluation.stats_snapshot["window"],
             "rolling_500": evaluation.stats_snapshot["rolling_500"],
             "latest_game": evaluation.stats_snapshot["latest_game"],
@@ -184,6 +190,7 @@ async def run_history_evaluation(ctx, evaluation_id: str) -> None:
             **narrative,
             "report_kind": "rolling_history",
             "scope": evaluation.scope_key,
+            "scope_label": result["scope_label"],
             "history_window": evaluation.stats_snapshot["window"],
             "games_included": evaluation.games_included,
             "latest_game_id": str(evaluation.latest_game_id) if evaluation.latest_game_id else None,

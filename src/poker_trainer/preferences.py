@@ -6,8 +6,11 @@ from typing import Any
 
 
 BET_SHORTCUTS_KEY = "bet_shortcuts_v1"
+SHOWDOWN_VISIBILITY_KEY = "showdown_visibility_v1"
 DEFAULT_PREFLOP_QUICK = [2.0, 2.5, 6.0, 7.5]
 DEFAULT_POSTFLOP_QUICK = [33.0, 50.0, 65.0, 100.0]
+DEFAULT_SHOWDOWN_VISIBILITY = "realistic"
+SHOWDOWN_VISIBILITY_MODES = frozenset({"realistic", "training"})
 
 
 def validate_quick_sizes(values: Any, *, field: str) -> list[float]:
@@ -43,10 +46,30 @@ def bet_shortcuts_from_preferences(preferences: dict | None) -> tuple[list[float
     return preflop, postflop
 
 
+def validate_showdown_visibility(value: Any) -> str:
+    """Validate the account-wide showdown visibility mode."""
+    if not isinstance(value, str) or value not in SHOWDOWN_VISIBILITY_MODES:
+        allowed = ", ".join(sorted(SHOWDOWN_VISIBILITY_MODES))
+        raise ValueError(f"showdown visibility must be one of: {allowed}.")
+    return value
+
+
+def showdown_visibility_from_preferences(preferences: dict | None) -> str:
+    """Return the saved visibility mode, falling back to realistic rules."""
+    raw = (preferences or {}).get(SHOWDOWN_VISIBILITY_KEY)
+    try:
+        return validate_showdown_visibility(raw)
+    except ValueError:
+        return DEFAULT_SHOWDOWN_VISIBILITY
+
+
 def merge_preferences(current: dict | None, update: dict) -> dict:
     """Shallow-merge preferences while validating the versioned known section."""
     merged = dict(current or {})
     for key, value in update.items():
+        if key == SHOWDOWN_VISIBILITY_KEY:
+            merged[key] = validate_showdown_visibility(value)
+            continue
         if key != BET_SHORTCUTS_KEY:
             merged[key] = value
             continue

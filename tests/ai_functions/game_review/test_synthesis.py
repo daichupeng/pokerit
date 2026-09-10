@@ -14,7 +14,11 @@ import json
 from poker_engine.db.models import Action, Game, GamePlayer, Hand, HandPlayer, Street, User
 from shared_services.llm import StreamResult, TokenUsage
 
-from ai_functions.game_review.synthesis import normalize_report_evidence, run_synthesis
+from ai_functions.game_review.synthesis import (
+    _leak_for_synthesis_context,
+    normalize_report_evidence,
+    run_synthesis,
+)
 
 
 def _make_user(db, email="hero@test.local"):
@@ -72,6 +76,61 @@ _LEAK_TAGS = [
     {"tag": "low_vpip", "kind": "stat", "severity": 3,
      "evidence": {"stat": "low_vpip", "pct": 10, "n": 10, "d": 100}},
 ]
+
+
+def test_vpip_narrative_uses_overall_split_and_cautious_reference_wording():
+    report = {
+        "summary": "x",
+        "sections": [{
+            "tag": "high_vpip",
+            "kind": "stat",
+            "severity": 2,
+            "profile_status": "returning",
+            "narrative": "VPIP is too loose for this player pool.",
+            "evidence": {
+                "pct": 31.0, "n": 31, "d": 100,
+                "session_vpip": {"pct": 30.0, "n": 30, "d": 100},
+                "segments": [
+                    {"table_size": 8, "pct": 25.0, "n": 5, "d": 20},
+                    {"table_size": 7, "pct": 31.2, "n": 25, "d": 80},
+                ],
+            },
+        }],
+    }
+
+    narrative = normalize_report_evidence(report)["sections"][0]["narrative"]
+
+    assert "Returning signal: overall VPIP is 30.0% (30/100 hands)." in narrative
+    assert "slightly above the configured reference" in narrative
+    assert "8-max 25.0% (5/20); 7-max 31.2% (25/80)" in narrative
+    assert "not a player-pool read" in narrative
+    assert "too loose" not in narrative
+
+
+def test_synthesis_context_keeps_full_count_but_caps_representative_citations():
+    citations = [
+        {
+            "hand_id": f"h{round_count}", "round_count": round_count,
+            "street": "preflop", "hero_action": "call", "issue": "too loose",
+            "better_line": "fold", "why": "dominated", "confidence": "high",
+        }
+        for round_count in range(1, 101, 9)
+    ]
+    leak = {
+        "tag": "missed_fold", "kind": "judgment", "severity": 2,
+        "citations": citations,
+        "evidence": {"occurrences": len(citations), "hands_dealt": 100,
+                     "occurrences_per_50": len(citations) / 2},
+    }
+
+    prompt_leak = _leak_for_synthesis_context(leak)
+
+    assert prompt_leak["total_citations"] == len(citations)
+    assert prompt_leak["representative_citations"] == 5
+    assert len(prompt_leak["citations"]) == 5
+    assert prompt_leak["citations"][0]["round_count"] < prompt_leak["citations"][-1]["round_count"]
+    # The persisted/audited source object is never truncated in place.
+    assert len(leak["citations"]) == len(citations)
 
 
 def test_run_synthesis_sorts_sections_by_severity_and_uses_tool_call(db_session, monkeypatch):
@@ -342,3 +401,55 @@ def test_normalize_report_evidence_repairs_saved_aggression_report():
         "Keep marginal lines controlled."
     )
     assert saved["sections"][0]["narrative"].startswith("The aggression factor")
+
+
+def test_normalize_report_evidence_uses_standard_three_bet_definition():
+    report = {
+        "summary": "x",
+        "sections": [{
+            "tag": "under_3bet",
+            "kind": "stat",
+            "severity": 3,
+            "evidence": {
+                "stat": "under_3bet", "pct": 0.0, "n": 0, "d": 7,
+                "definition": "first voluntary hero decision facing exactly one raise",
+                "limp_reraise": {"pct": 0.0, "n": 0, "d": 4},
+            },
+            "narrative": "Zero 3-bets across 11 chances proves every fold was too passive.",
+        }],
+    }
+
+    normalized = normalize_report_evidence(report)
+
+    assert normalized["sections"][0]["narrative"] == (
+        "Standard 3-bet frequency is 0.0% (0/7); this counts only the hero's first "
+        "voluntary decision facing exactly one raise. Limp-reraise decisions are "
+        "tracked separately at 0/4. This is a session-level frequency flag, not "
+        "proof that every fold or call in the denominator should have been a 3-bet."
+    )
+
+
+def test_normalize_report_evidence_separates_sb_completes_from_open_limps():
+    report = {
+        "summary": "x",
+        "sections": [{
+            "tag": "limps_too_wide",
+            "kind": "stat",
+            "severity": 2,
+            "evidence": {
+                "stat": "open_limp", "pct": 8.0, "n": 4, "d": 50,
+                "total_limp": {"pct": 12.0, "n": 6, "d": 50},
+                "over_limp": {"pct": 0.0, "n": 0, "d": 50},
+                "sb_complete": {"pct": 4.0, "n": 2, "d": 50},
+            },
+            "narrative": "All six limps were structurally passive.",
+        }],
+    }
+
+    normalized = normalize_report_evidence(report)
+
+    assert normalized["sections"][0]["narrative"] == (
+        "Non-SB open-limp frequency is 8.0% (4/50 hands). Total limps were 6/50, "
+        "including 0 over-limps and 2 SB completions; those two categories do not "
+        "trigger this leak tag."
+    )

@@ -68,3 +68,42 @@ def test_custom_settings_use_custom_profile_scope():
     assert profile_scope_for_settings(
         game_format="tournament", buy_in=2500, big_blind=100
     ) == "custom"
+
+
+def test_custom_scope_isolates_format_seats_depth_and_ante_without_rounding():
+    from poker_engine.scenarios import is_custom_profile_scope
+    settings = dict(game_format="cash", buy_in=10000, big_blind=100,
+                    num_players=6, ante=0, ante_type="none")
+    baseline = profile_scope_for_settings(**settings)
+    assert is_custom_profile_scope(baseline)
+    assert len(baseline) <= 40
+    for changes in [dict(game_format="tournament"), dict(num_players=8),
+                    dict(buy_in=10001), dict(ante=100, ante_type="big_blind"),
+                    dict(tournament_stage="standard")]:
+        assert profile_scope_for_settings(**{**settings, **changes}) != baseline
+    assert profile_scope_for_settings(**{**settings, "buy_in": 20000, "big_blind": 200}) == baseline
+    assert baseline != "cash_6max_100bb"
+
+
+def test_legacy_custom_games_derive_scopes_from_saved_settings():
+    from uuid import uuid4
+    base = dict(id=uuid4(), scenario="custom", profile_scope="custom", rule={},
+                game_format="cash", buy_in=10000, big_blind=100,
+                players=[object()] * 6, ante=0, ante_type="none")
+    cash = profile_scope_for_game(SimpleNamespace(**base))
+    mtt = profile_scope_for_game(SimpleNamespace(**{**base, "game_format": "tournament"}))
+    assert cash != mtt
+    assert cash == profile_scope_for_settings(game_format="cash", buy_in=10000,
+                                             big_blind=100, num_players=6)
+
+
+def test_custom_statistics_do_not_apply_uncalibrated_leak_thresholds():
+    from ai_functions.game_review.leak_taxonomy import get_threshold_profile, threshold_profile_key_for_game
+    from ai_functions.game_review.stat_leaks import detect_stat_leaks
+    scope = profile_scope_for_settings(game_format="tournament", buy_in=1500,
+                                       big_blind=100, num_players=8)
+    game = SimpleNamespace(scenario="custom", profile_scope=scope)
+    assert threshold_profile_key_for_game(game) == scope
+    profile = get_threshold_profile(scope)
+    assert not profile.enabled_stat_tags
+    assert detect_stat_leaks({"vpip": {"pct": 100, "n": 100, "d": 100}}, scope) == []

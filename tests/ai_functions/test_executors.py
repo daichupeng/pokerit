@@ -12,6 +12,7 @@ from ai_functions.tools.executors import (
     make_hand_lookup_tool,
     make_hand_search_tool,
     make_pot_odds_tool,
+    make_range_equity_calculator_tool,
     make_stats_query_tool,
 )
 from poker_engine import pk_adapter, stats
@@ -159,6 +160,57 @@ def test_pot_odds_tool_handles_zero_denominator():
     tool = make_pot_odds_tool()
     result = tool(pot_size=0, amount_to_call=0)
     assert result["required_equity_pct"] == 0.0
+
+
+def test_range_equity_tool_binds_cards_and_can_select_earlier_board_prefix():
+    tool = make_range_equity_calculator_tool(
+        ["9c", "6c"], ["9h", "Th", "7c", "Qc", "Ac"],
+    )
+
+    result = tool(
+        villain_ranges=[{"label": "made hands", "hands": [{"hand": "QQ"}]}],
+        board_street="turn",
+    )
+
+    assert result["status"] == "ok"
+    assert result["hero_cards"] == ["9c", "6c"]
+    assert result["board"] == ["9h", "Th", "7c", "Qc"]
+    assert result["analysis_street"] == "turn"
+    assert result["provenance"]["method"] == "exact_enumeration"
+
+
+def test_range_equity_tool_rejects_unavailable_future_street():
+    tool = make_range_equity_calculator_tool(
+        ["As", "Kd"], ["Qs", "Jh", "2c"],
+    )
+
+    result = tool(
+        villain_ranges=[{"label": "pair", "hands": [{"hand": "QQ"}]}],
+        board_street="turn",
+    )
+
+    assert result == {
+        "status": "error",
+        "error": "board_street_unavailable:turn",
+    }
+
+
+def test_range_equity_tool_rejects_unrequested_earlier_street_when_bound():
+    tool = make_range_equity_calculator_tool(
+        ["9c", "6c"],
+        ["9h", "Th", "7c", "Qc", "Ac"],
+        allowed_earlier_streets=set(),
+    )
+
+    result = tool(
+        villain_ranges=[{"label": "set", "hands": [{"hand": "QQ"}]}],
+        board_street="turn",
+    )
+
+    assert result == {
+        "status": "error",
+        "error": "board_street_not_requested:turn",
+    }
 
 
 def test_hand_search_tool_filters_by_street_reached(db_session):

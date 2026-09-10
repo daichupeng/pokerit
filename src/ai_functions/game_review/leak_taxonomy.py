@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-THRESHOLD_VERSION = "2026-07-23.v3"
+from poker_engine.scenarios import is_custom_profile_scope
+
+THRESHOLD_VERSION = "2026-08-31.v6"
 DEFAULT_THRESHOLD_PROFILE = "cash_6max_100bb"
 
 JUDGMENT_TAGS = frozenset({
@@ -30,10 +32,16 @@ PUSH_FOLD_JUDGMENT_TAGS = frozenset({
     "bad_call_off",
 })
 
-# One deliberately permissive floor shared by every deterministic metric.
-# Even a small sample is useful as long as the report presents it as an early
-# signal rather than a settled long-term conclusion.
+# Produced from an exact matching RFI range node by deterministic code. It is
+# part of the profile/tag universe but deliberately omitted from the LLM street
+# agent's vocabulary (``judgment_tags_for_profile`` returns the sets above).
+DETERMINISTIC_JUDGMENT_TAGS = frozenset({"missed_open_raise"})
+
+# Most deterministic metrics use a permissive opportunity floor. VPIP is a
+# per-hand rate and needs a materially larger sample before it becomes a leak
+# tag rather than a descriptive early-session tendency.
 MIN_OPPORTUNITY_FLOOR = 5
+VPIP_LEAK_MIN_OPPORTUNITIES = 50
 
 EP_POSITIONS = frozenset({"UTG", "UTG+1", "UTG+2"})
 LP_POSITIONS = frozenset({"BTN", "CO"})
@@ -76,13 +84,15 @@ for _street in _POSTFLOP_STREETS:
 GAP_TAG = "limps_too_wide"
 POSITIONAL_TAG = "positional_looseness"
 ALL_STAT_TAGS = frozenset(STAT_THRESHOLDS) | {GAP_TAG, POSITIONAL_TAG}
-ALL_JUDGMENT_TAGS = JUDGMENT_TAGS | PUSH_FOLD_JUDGMENT_TAGS
+ALL_JUDGMENT_TAGS = (
+    JUDGMENT_TAGS | PUSH_FOLD_JUDGMENT_TAGS | DETERMINISTIC_JUDGMENT_TAGS
+)
 
 
 def _base_minimums() -> dict[str, int]:
     minimums = {
-        "low_vpip": MIN_OPPORTUNITY_FLOOR,
-        "high_vpip": MIN_OPPORTUNITY_FLOOR,
+        "low_vpip": VPIP_LEAK_MIN_OPPORTUNITIES,
+        "high_vpip": VPIP_LEAK_MIN_OPPORTUNITIES,
         GAP_TAG: MIN_OPPORTUNITY_FLOOR,
         POSITIONAL_TAG: MIN_OPPORTUNITY_FLOOR,
         "under_3bet": MIN_OPPORTUNITY_FLOOR,
@@ -163,6 +173,8 @@ _PROFILE_ALIASES = {
 
 def get_threshold_profile(profile_key: str | None) -> ThresholdProfile:
     key = _PROFILE_ALIASES.get(profile_key or "", profile_key or DEFAULT_THRESHOLD_PROFILE)
+    if is_custom_profile_scope(key):
+        return ThresholdProfile(key, "2026-09-09.custom.v1", {}, {}, frozenset())
     return THRESHOLD_PROFILES.get(key, THRESHOLD_PROFILES["custom"])
 
 
@@ -170,7 +182,7 @@ def threshold_profile_key_for_game(game) -> str:
     from poker_engine.scenarios import profile_scope_for_game
 
     scenario = getattr(game, "scenario", None)
-    if scenario in THRESHOLD_PROFILES:
+    if scenario in THRESHOLD_PROFILES and scenario != "custom":
         return scenario
     scope = profile_scope_for_game(game)
     return get_threshold_profile(scope).key
@@ -197,7 +209,12 @@ def _opportunity_for_node(tag: str, node: dict) -> int:
     return int(node.get("d", 0))
 
 
-def _severity_from_bounds(value: float, direction: str, severe_bound: float, moderate_bound: float) -> int | None:
+def severity_from_bounds(
+    value: float,
+    direction: str,
+    severe_bound: float,
+    moderate_bound: float,
+) -> int | None:
     if direction == "low":
         if value < severe_bound:
             return 3
@@ -213,8 +230,8 @@ def _severity_from_bounds(value: float, direction: str, severe_bound: float, mod
 
 def stat_tag_opportunity(tag: str, display: dict) -> int | None:
     if tag == GAP_TAG:
-        vpip = display.get("vpip")
-        return int(vpip["d"]) if vpip else None
+        open_limp = display.get("open_limp") or display.get("limp")
+        return int(open_limp["d"]) if open_limp else None
     if tag == POSITIONAL_TAG:
         ep = _combined_position_vpip(display, EP_POSITIONS)
         lp = _combined_position_vpip(display, LP_POSITIONS)
@@ -241,7 +258,12 @@ def _severity_single_stat(tag: str, display: dict, profile: ThresholdProfile) ->
         value = float("inf")
     if value is None:
         return None
-    severity = _severity_from_bounds(value, threshold.direction, threshold.severe_bound, threshold.moderate_bound)
+    severity = severity_from_bounds(
+        value,
+        threshold.direction,
+        threshold.severe_bound,
+        threshold.moderate_bound,
+    )
     if severity is None:
         return None
     evidence_value = None if is_infinite else value
@@ -260,7 +282,9 @@ def _severity_single_stat(tag: str, display: dict, profile: ThresholdProfile) ->
 
 
 def _severity_limps_too_wide(display: dict, profile: ThresholdProfile) -> dict | None:
-    limp = display.get("limp")
+    # New snapshots judge only non-SB open limps. The legacy fallback keeps
+    # pre-v4 stored snapshots readable without changing their frozen reports.
+    limp = display.get("open_limp") or display.get("limp")
     if not limp or limp.get("d", 0) < profile.minimum_opportunities[GAP_TAG]:
         return None
     limp_pct = limp["pct"]
@@ -269,7 +293,13 @@ def _severity_limps_too_wide(display: dict, profile: ThresholdProfile) -> dict |
         return None
     return {
         "tag": GAP_TAG, "kind": "stat", "severity": severity,
-        "evidence": {"stat": GAP_TAG, "pct": limp_pct, "n": limp["n"], "d": limp["d"]},
+        "evidence": {
+            "stat": "open_limp", "definition": "non-SB open limp / hands dealt",
+            "pct": limp_pct, "n": limp["n"], "d": limp["d"],
+            "total_limp": display.get("limp"),
+            "over_limp": display.get("over_limp"),
+            "sb_complete": display.get("sb_complete"),
+        },
     }
 
 
@@ -318,10 +348,24 @@ def severity_for_stat_tag(tag: str, display: dict, profile_key: str | None = Non
     raise ValueError(f"Unknown stat tag: {tag}")
 
 
-def severity_for_judgment_count(n: int) -> int:
-    if n <= 1:
+def judgment_occurrences_per_50(n: int, hands_dealt: int | None = None) -> float:
+    """Return a session-length-neutral occurrence count.
+
+    The original judgment bands were calibrated on sessions of up to 50 hands.
+    Keep their exact behavior for those sessions, while scaling longer sessions
+    back to a 50-hand exposure so an unchanged error rate is not automatically
+    assigned a higher severity merely because the player chose 100 hands.
+    """
+    if not hands_dealt or hands_dealt <= 50:
+        return float(n)
+    return round(n * 50 / hands_dealt, 2)
+
+
+def severity_for_judgment_count(n: int, hands_dealt: int | None = None) -> int:
+    normalized = judgment_occurrences_per_50(n, hands_dealt)
+    if normalized <= 1:
         return 1
-    if n <= 3:
+    if normalized <= 3:
         return 2
     return 3
 
@@ -368,7 +412,8 @@ def sample_status(display: dict, profile_key: str | None = None) -> dict:
             ]
             segments.sort(key=lambda item: item["table_size"], reverse=True)
             metric["segments"] = segments
-            metric["observed"] = max((item["observed"] for item in segments), default=0)
-            metric["status"] = "ready" if metric["observed"] >= required else "insufficient_sample"
         metrics.append(metric)
-    return {"profile": profile.key, "version": profile.version, "metrics": metrics}
+    result = {"profile": profile.key, "version": profile.version, "metrics": metrics}
+    if is_custom_profile_scope(profile.key):
+        result["benchmark_status"] = "unavailable_descriptive_statistics_only"
+    return result

@@ -61,7 +61,7 @@ class GameConfig:
     game_format: str = "cash"
     scenario: str = "custom"
     tournament_stage: str | None = None
-    profile_scope: str = "cash_6max_100bb"
+    profile_scope: str = "custom"
 
     @property
     def big_blind(self) -> int:
@@ -91,6 +91,13 @@ class GameConfig:
         names = [s.name for s in self.seats]
         if len(names) != len(set(names)):
             raise ValueError("Seat names must be unique.")
+
+        from poker_engine.scenarios import profile_scope_for_settings
+        self.profile_scope = profile_scope_for_settings(
+            game_format=self.game_format, buy_in=self.buy_in, big_blind=self.big_blind,
+            scenario=self.scenario, num_players=len(self.seats), ante=self.ante,
+            ante_type=self.ante_type, tournament_stage=self.tournament_stage,
+        )
 
     @property
     def hero_seat(self) -> SeatSpec | None:

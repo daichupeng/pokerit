@@ -27,7 +27,7 @@ from poker_engine.db.models import (
     Hand,
     User,
 )
-from poker_engine.stats import _sum_hands, to_display
+from poker_engine.stats import _sum_hands, preflop_event_evidence, to_display
 
 from ai_functions.game_review import config
 from ai_functions.game_review.leak_taxonomy import (
@@ -36,10 +36,17 @@ from ai_functions.game_review.leak_taxonomy import (
     threshold_profile_key_for_game,
 )
 from ai_functions.game_review.merge import merge_findings
+from ai_functions.game_review.preflop_findings import detect_rfi_limp_findings
 from ai_functions.game_review.session_dynamics import compute_session_dynamics
 from ai_functions.game_review.street_agent import BATCH_SIZE, STREETS, run_batch
 from ai_functions.game_review.synthesis import run_synthesis
 from ai_functions.game_review.triage import triage_hands
+from ai_functions.decision_snapshot import build_decision_snapshots
+from ai_functions.preflop_ranges import (
+    configured_api_key,
+    configured_preflop_version,
+    query_postgame_snapshots,
+)
 from ai_functions.memory.persistence import build_profile_context, fold_and_persist
 from poker_engine.scenarios import profile_scope_for_game
 from ai_functions.memory.profile_status import compute_profile_status
@@ -95,6 +102,7 @@ def _ensure_batches_created(db, evaluation: GameEvaluation, game: Game, hands: l
     hero_gp_id = _hero_gp_id(game)
     threshold_profile = get_threshold_profile(threshold_profile_key_for_game(game))
     game_level = to_display(_sum_hands(hands, hero_gp_id))
+    game_level["preflop_events"] = preflop_event_evidence(hands, hero_gp_id)
     stats_snapshot = {
         "evaluation_kind": "current_game",
         "game_level": game_level,
@@ -128,6 +136,73 @@ def _ensure_batches_created(db, evaluation: GameEvaluation, game: Game, hands: l
     db.commit()
 
 
+async def _prepare_pokerai_evidence(evaluation_id) -> None:
+    """Resolve at most 15 selected preflop decisions once per evaluation."""
+    db = SessionLocal()
+    try:
+        evaluation = db.get(GameEvaluation, evaluation_id)
+        if evaluation is None:
+            return
+        existing = (evaluation.stats_snapshot or {}).get("preflop_strategy_api")
+        if existing is not None:
+            return
+        if configured_api_key() is None:
+            stats_snapshot = dict(evaluation.stats_snapshot or {})
+            stats_snapshot["preflop_strategy_api"] = {
+                "configured": False,
+                "version": configured_preflop_version(),
+                "call_limit": config.POSTGAME_POKERAI_CALL_LIMIT,
+                "attempted": 0,
+                "resolved": 0,
+                "failures": [],
+                "evidence_by_decision": {},
+            }
+            evaluation.stats_snapshot = stats_snapshot
+            db.commit()
+            return
+
+        game, hands = _load_game_with_hands(db, evaluation.game_id)
+        if game is None:
+            return
+        hero_gp_id = _hero_gp_id(game)
+        preflop_batches = db.execute(
+            select(GameEvaluationBatch).where(
+                GameEvaluationBatch.evaluation_id == evaluation_id,
+                GameEvaluationBatch.agent == "preflop",
+            ).order_by(GameEvaluationBatch.batch_index)
+        ).scalars().all()
+        selected_hand_ids = {
+            str(hand_id)
+            for batch in preflop_batches
+            for hand_id in (batch.hand_ids or [])
+        }
+        snapshots = [
+            snapshot
+            for hand in hands
+            if str(hand.id) in selected_hand_ids
+            for snapshot in build_decision_snapshots(game, hand, hero_gp_id, "preflop")
+        ]
+    finally:
+        db.close()
+
+    metadata = await query_postgame_snapshots(
+        snapshots, limit=config.POSTGAME_POKERAI_CALL_LIMIT,
+    )
+
+    db = SessionLocal()
+    try:
+        evaluation = db.get(GameEvaluation, evaluation_id)
+        if evaluation is None:
+            return
+        if (evaluation.stats_snapshot or {}).get("preflop_strategy_api") is None:
+            stats_snapshot = dict(evaluation.stats_snapshot or {})
+            stats_snapshot["preflop_strategy_api"] = metadata
+            evaluation.stats_snapshot = stats_snapshot
+            db.commit()
+    finally:
+        db.close()
+
+
 async def _run_one_batch(evaluation_id, batch_id, street: str, semaphore: asyncio.Semaphore) -> None:
     async with semaphore:
         db = SessionLocal()
@@ -143,12 +218,20 @@ async def _run_one_batch(evaluation_id, batch_id, street: str, semaphore: asynci
                 .order_by(Hand.round_count)
             ).scalars().all()
             hero_gp_id = _hero_gp_id(game)
+            pokerai_meta = (evaluation.stats_snapshot or {}).get("preflop_strategy_api") or {}
+            pokerai_evidence = pokerai_meta.get("evidence_by_decision") or {}
 
             error: str | None = None
             findings: list[dict] | None = None
             for attempt in range(1, BATCH_MAX_ATTEMPTS + 1):
                 try:
-                    findings = await run_batch(street, list(hands), game, hero_gp_id)
+                    findings = await run_batch(
+                        street,
+                        list(hands),
+                        game,
+                        hero_gp_id,
+                        pokerai_evidence_by_decision=pokerai_evidence,
+                    )
                     error = None
                     break
                 except Exception as exc:  # noqa: BLE001 - recorded per batch, never crashes the gather
@@ -230,6 +313,14 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
         db.close()
 
     try:
+        await _prepare_pokerai_evidence(evaluation_id)
+    except Exception as exc:  # noqa: BLE001 - optional evidence must fail closed
+        _log.warning(
+            "game_review.pokerai.prepare_failed",
+            extra={"evaluation_id": str(evaluation_id), "error": str(exc)},
+        )
+
+    try:
         await _run_pending_batches(evaluation_id)
     except Exception as exc:  # noqa: BLE001
         db = SessionLocal()
@@ -262,6 +353,11 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
             return
 
         street_findings = _collect_street_findings(db, evaluation_id)
+        game, hands = _load_game_with_hands(db, evaluation.game_id)
+        hero_gp_id = _hero_gp_id(game)
+        street_findings.setdefault("preflop", []).extend(
+            detect_rfi_limp_findings(game, hands, hero_gp_id)
+        )
         threshold_meta = evaluation.stats_snapshot.get("threshold_profile") or {}
         threshold_profile = get_threshold_profile(threshold_meta.get("key"))
         leak_tags = merge_findings(
@@ -273,7 +369,6 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
         evaluation.current_stage = "synthesis"
         db.commit()
 
-        game, _ = _load_game_with_hands(db, evaluation.game_id)
         user = db.get(User, evaluation.user_id)
 
         # Read BEFORE this evaluation folds itself in, so its own result
@@ -303,12 +398,24 @@ async def run_evaluation(ctx, evaluation_id: str) -> None:
                 "key": threshold_profile.key,
                 "version": threshold_profile.version,
             },
+            "preflop_evidence": {
+                key: value
+                for key, value in (
+                    (evaluation.stats_snapshot.get("preflop_strategy_api") or {}).items()
+                )
+                if key != "evidence_by_decision"
+            },
         }
+        preflop_meta = evaluation.stats_snapshot.get("preflop_strategy_api") or {}
         evaluation.model_versions = {
             "street_agent": config.MODEL,
             "synthesis": config.MODEL,
             "stat_threshold_profile": threshold_profile.key,
             "stat_threshold_version": threshold_profile.version,
+            "preflop_strategy_api": (
+                preflop_meta.get("version")
+                if int(preflop_meta.get("resolved") or 0) > 0 else None
+            ),
         }
         evaluation.status = EvaluationStatus.COMPLETED
         evaluation.progress_current = evaluation.progress_total

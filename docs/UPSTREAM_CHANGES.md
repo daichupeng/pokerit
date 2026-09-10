@@ -99,10 +99,11 @@ Behavior:
 
 Current policy note:
 
-- Threshold version: `2026-07-23.v3`.
-- Minimum opportunity floor: 5 for every enabled deterministic metric.
-- This is intentionally permissive and should be treated as an early-signal
-  product setting, not a population-grade statistical claim.
+- Threshold version: `2026-08-31.v6`.
+- Minimum opportunity floor: 5 for most enabled deterministic metrics; VPIP
+  leak tags require 50 supported hands.
+- Mixed-table-size VPIP uses hands-weighted reference bounds. These remain
+  recorded-session signals, not population-grade or player-pool claims.
 
 ### 4. Future-clipped game review and evidence discipline
 

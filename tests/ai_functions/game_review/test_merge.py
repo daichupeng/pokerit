@@ -16,6 +16,7 @@ def _stat(pct=None, ratio=None, n=0, d=0):
 
 def _display(**overrides):
     base = {
+        "hands_dealt": 50,
         "vpip": _stat(pct=25, n=25, d=100),
         "pfr": _stat(pct=20, n=20, d=100),
         "three_bet": _stat(pct=6, n=6, d=100),
@@ -81,6 +82,24 @@ def test_merge_findings_four_or_more_is_severity_three():
     merged = merge_findings(street_findings, _display())
     judgment = [t for t in merged if t["kind"] == "judgment"]
     assert judgment[0]["severity"] == 3
+
+
+def test_merge_findings_normalizes_judgment_severity_for_100_hands():
+    street_findings = {"preflop": [
+        {"tag": "inconsistent_sizing", "hand_id": f"h{i}", "round_count": i,
+         "street": "preflop", "note": "x"}
+        for i in range(4)
+    ]}
+    merged = merge_findings(street_findings, _display(hands_dealt=100))
+    judgment = [tag for tag in merged if tag["kind"] == "judgment"][0]
+
+    assert judgment["severity"] == 2
+    assert judgment["evidence"] == {
+        "occurrences": 4,
+        "hands_dealt": 100,
+        "occurrences_per_50": 2.0,
+        "severity_basis": "judgment occurrences normalized to 50 hands",
+    }
 
 
 def test_merge_findings_combines_with_stat_leaks():

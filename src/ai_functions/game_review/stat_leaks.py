@@ -9,6 +9,45 @@ from __future__ import annotations
 from ai_functions.game_review import leak_taxonomy
 
 _TABLE_SIZE_VPIP_TAGS = frozenset({"low_vpip", "high_vpip"})
+_THREE_BET_TAGS = frozenset({"under_3bet", "over_3bet"})
+
+
+def _attach_preflop_evidence(leak: dict, stats_display: dict) -> dict:
+    """Attach the exact hands and related split counters to preflop stat tags."""
+    tag = leak.get("tag")
+    if tag == leak_taxonomy.GAP_TAG:
+        event_key = "open_limp"
+    elif tag in _THREE_BET_TAGS:
+        event_key = "three_bet_opportunity"
+    else:
+        return leak
+
+    events = list((stats_display.get("preflop_events") or {}).get(event_key) or [])
+    evidence = dict(leak.get("evidence") or {})
+    evidence["events"] = events
+    if tag in _THREE_BET_TAGS:
+        evidence.update({
+            "definition": "first voluntary hero decision facing exactly one raise",
+            "squeeze": stats_display.get("squeeze"),
+            "limp_reraise": stats_display.get("limp_reraise"),
+            "limp_reraise_events": list(
+                (stats_display.get("preflop_events") or {}).get(
+                    "limp_reraise_opportunity"
+                ) or []
+            ),
+        })
+    leak["evidence"] = evidence
+    leak["citations"] = [
+        {
+            "hand_id": event.get("hand_id"),
+            "round_count": event.get("round_count"),
+            "street": "preflop",
+            "action": event.get("action"),
+        }
+        for event in events
+        if event.get("round_count") is not None
+    ]
+    return leak
 
 
 def _profile_for_table_size(base_profile, table_size: int):
@@ -29,7 +68,20 @@ def _profile_for_table_size(base_profile, table_size: int):
 
 
 def _segmented_vpip_leak(tag: str, stats_display: dict, base_profile) -> dict | None:
+    """Judge mixed-table-size VPIP as one weighted session observation.
+
+    Segment-specific profiles still supply the appropriate reference bounds,
+    but one short/noisy segment can no longer represent the whole game. Hands
+    from unsupported table sizes remain descriptive and are excluded from the
+    leak decision.
+    """
     segments = []
+    total_n = 0
+    total_d = 0
+    weighted_severe = 0.0
+    weighted_moderate = 0.0
+    required = 0
+    direction: str | None = None
     for raw_size, segment_display in (stats_display.get("by_table_size") or {}).items():
         try:
             table_size = int(raw_size)
@@ -38,32 +90,67 @@ def _segmented_vpip_leak(tag: str, stats_display: dict, base_profile) -> dict | 
         profile = _profile_for_table_size(base_profile, table_size)
         if profile is None:
             continue
-        leak = leak_taxonomy.severity_for_stat_tag(tag, segment_display, profile.key)
-        if leak is None:
+        vpip = segment_display.get("vpip") or {}
+        n = int(vpip.get("n", 0) or 0)
+        d = int(vpip.get("d", 0) or 0)
+        if d <= 0:
             continue
+        threshold = profile.thresholds[tag]
+        direction = threshold.direction
+        total_n += n
+        total_d += d
+        weighted_severe += threshold.severe_bound * d
+        weighted_moderate += threshold.moderate_bound * d
+        required = max(required, profile.minimum_opportunities[tag])
         segments.append({
             "table_size": table_size,
             "profile": profile.key,
-            "severity": leak["severity"],
-            **leak["evidence"],
+            "pct": vpip.get("pct"),
+            "n": n,
+            "d": d,
         })
-    if not segments:
+    if not segments or total_d < required or direction is None:
         return None
-    segments.sort(key=lambda item: (item["severity"], item.get("d", 0)), reverse=True)
-    strongest = segments[0]
+
+    pct = round(100 * total_n / total_d, 1)
+    severe_bound = weighted_severe / total_d
+    moderate_bound = weighted_moderate / total_d
+    severity = leak_taxonomy.severity_from_bounds(
+        pct,
+        direction,
+        severe_bound,
+        moderate_bound,
+    )
+    if severity is None:
+        return None
+
+    segments.sort(key=lambda item: item["table_size"], reverse=True)
+    evidence = {
+        "stat": tag,
+        "pct": pct,
+        "n": total_n,
+        "d": total_d,
+        "session_vpip": stats_display.get("vpip"),
+        "reference": {
+            "direction": direction,
+            "moderate_bound": round(moderate_bound, 1),
+            "severe_bound": round(severe_bound, 1),
+            "method": "hands-weighted supported table-size profiles",
+        },
+        "segments": segments,
+    }
+    if len(segments) == 1:
+        evidence.update({
+            "table_size": segments[0]["table_size"],
+            "profile": segments[0]["profile"],
+        })
+    else:
+        evidence["profiles"] = sorted({segment["profile"] for segment in segments})
     return {
         "tag": tag,
         "kind": "stat",
-        "severity": strongest["severity"],
-        "evidence": {
-            "stat": tag,
-            "table_size": strongest["table_size"],
-            "profile": strongest["profile"],
-            "pct": strongest.get("pct"),
-            "n": strongest.get("n"),
-            "d": strongest.get("d"),
-            "segments": segments,
-        },
+        "severity": severity,
+        "evidence": evidence,
     }
 
 
@@ -83,5 +170,5 @@ def detect_stat_leaks(stats_display: dict, profile_key: str | None = None) -> li
         else:
             leak = leak_taxonomy.severity_for_stat_tag(tag, stats_display, profile.key)
         if leak is not None:
-            leaks.append(leak)
+            leaks.append(_attach_preflop_evidence(leak, stats_display))
     return leaks

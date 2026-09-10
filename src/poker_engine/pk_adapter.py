@@ -89,8 +89,6 @@ def _hand_label(hand: StandardHighHand) -> str:
 
     ranks = [rank_of(c) for c in cards]
 
-    _RANK_ORDER = "A23456789TJQKA"  # A appears twice: index 0 (low) and 13 (high)
-
     def _straight_high_rank(ranks: list[str]) -> str:
         rank_set = set(ranks)
         # Wheel: A-2-3-4-5. Ace plays low, high card is 5.
@@ -112,7 +110,8 @@ def _hand_label(hand: StandardHighHand) -> str:
         pair = min(set(ranks), key=ranks.count)
         return f"Full House, {_RANK_PLURAL[trip]} full of {_RANK_PLURAL[pair]}"
     if label == Label.FLUSH:
-        return f"Flush, {_RANK_NAME[ranks[0]]} high"
+        high = max(ranks, key=lambda r: "23456789TJQKA".index(r))
+        return f"Flush, {_RANK_NAME[high]} high"
     if label == Label.STRAIGHT:
         high = _straight_high_rank(ranks)
         return f"Straight, {_RANK_NAME[high]} high"
@@ -127,7 +126,8 @@ def _hand_label(hand: StandardHighHand) -> str:
         pair = max(set(ranks), key=ranks.count)
         return f"Pair of {_RANK_PLURAL[pair]}"
     # High card
-    return f"High Card, {_RANK_NAME[ranks[0]]}"
+    high = max(ranks, key=lambda r: "23456789TJQKA".index(r))
+    return f"High Card, {_RANK_NAME[high]}"
 
 
 def best_five(hole: list[str], community: list[str]) -> dict:
@@ -141,7 +141,10 @@ def best_five(hole: list[str], community: list[str]) -> dict:
         if not all_strs:
             return {"cards": [], "label": ""}
         cards = parse_cards(all_strs)
-        best_rank = max(repr(c)[0] for c in cards)
+        best_rank = max(
+            (repr(c)[0] for c in cards),
+            key=lambda r: "23456789TJQKA".index(r),
+        )
         return {"cards": all_strs, "label": f"High Card, {_RANK_NAME[best_rank]}"}
 
     all_cards = parse_cards(all_strs)

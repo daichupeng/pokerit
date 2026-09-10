@@ -19,6 +19,9 @@ def _base_display(**overrides):
         "vpip": _stat(pct=25, n=25, d=100),
         "pfr": _stat(pct=20, n=20, d=100),
         "limp": _stat(pct=5, n=5, d=100),
+        "open_limp": _stat(pct=3, n=3, d=100),
+        "over_limp": _stat(pct=1, n=1, d=100),
+        "sb_complete": _stat(pct=1, n=1, d=100),
         "three_bet": _stat(pct=7, n=7, d=100),
         "fold_to_3bet": _stat(pct=50, n=5, d=10),
         "wtsd": _stat(pct=27, n=27, d=100),
@@ -83,10 +86,10 @@ def test_min_opportunity_floor_suppresses_tag():
     assert leak_taxonomy.severity_for_stat_tag("low_vpip", display) is None
 
 
-def test_vpip_uses_shared_five_opportunity_floor():
-    display = _base_display(vpip=_stat(pct=10, n=0, d=4))
+def test_vpip_requires_fifty_hands_before_creating_a_leak_tag():
+    display = _base_display(vpip=_stat(pct=10, n=5, d=49))
     assert leak_taxonomy.severity_for_stat_tag("low_vpip", display) is None
-    display["vpip"] = _stat(pct=10, n=1, d=5)
+    display["vpip"] = _stat(pct=10, n=5, d=50)
     assert leak_taxonomy.severity_for_stat_tag("low_vpip", display)["severity"] == 3
 
 
@@ -99,7 +102,7 @@ def test_too_passive_postflop_uses_ratio_not_pct():
 
 def test_limps_too_wide_severe():
     display = _base_display(
-        limp=_stat(pct=15, n=15, d=100),
+        open_limp=_stat(pct=15, n=15, d=100),
     )
     leak = leak_taxonomy.severity_for_stat_tag("limps_too_wide", display)
     assert leak["severity"] == 3
@@ -108,7 +111,7 @@ def test_limps_too_wide_severe():
 
 def test_limps_too_wide_none_when_gap_small():
     display = _base_display(
-        limp=_stat(pct=3, n=3, d=100),
+        open_limp=_stat(pct=3, n=3, d=100),
     )
     assert leak_taxonomy.severity_for_stat_tag("limps_too_wide", display) is None
 
@@ -143,6 +146,15 @@ def test_severity_for_judgment_count():
     assert leak_taxonomy.severity_for_judgment_count(10) == 3
 
 
+def test_judgment_severity_normalizes_sessions_longer_than_50_hands():
+    assert leak_taxonomy.judgment_occurrences_per_50(4, 100) == 2.0
+    assert leak_taxonomy.severity_for_judgment_count(4, 100) == 2
+    assert leak_taxonomy.severity_for_judgment_count(6, 100) == 2
+    assert leak_taxonomy.severity_for_judgment_count(7, 100) == 3
+    # Short sessions retain the original count bands instead of being scaled up.
+    assert leak_taxonomy.severity_for_judgment_count(2, 20) == 2
+
+
 def test_unknown_tag_raises():
     import pytest
 
@@ -162,8 +174,8 @@ def test_stat_tag_opportunity_none_when_stat_missing():
     assert leak_taxonomy.stat_tag_opportunity("low_vpip", display) is None
 
 
-def test_stat_tag_opportunity_gap_tag_uses_vpip_denominator():
-    display = _base_display(vpip=_stat(pct=25, n=25, d=77))
+def test_stat_tag_opportunity_gap_tag_uses_open_limp_denominator():
+    display = _base_display(open_limp=_stat(pct=3, n=2, d=77))
     assert leak_taxonomy.stat_tag_opportunity("limps_too_wide", display) == 77
 
 
@@ -207,7 +219,7 @@ def test_sample_status_marks_unready_metrics_without_a_leak():
     status = leak_taxonomy.sample_status(display, "cash_6max_100bb")
     vpip = next(metric for metric in status["metrics"] if metric["metric"] == "VPIP / PFR")
     assert vpip == {
-        "metric": "VPIP / PFR", "observed": 4, "required": 5,
+        "metric": "VPIP / PFR", "observed": 4, "required": 50,
         "status": "insufficient_sample",
     }
     assert status["version"] == leak_taxonomy.THRESHOLD_VERSION

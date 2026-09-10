@@ -11,6 +11,7 @@ def _display(vpip_pct: float, hands: int = 100) -> dict:
         "vpip": stat(vpip_pct, round(vpip_pct * hands / 100), hands),
         "pfr": stat(20, 20, hands),
         "limp": stat(5, 5, hands),
+        "open_limp": stat(3, 3, hands),
         "three_bet": stat(7, 7, 100),
         "fold_to_3bet": stat(50, 10, 20),
         "aggression_factor": {"ratio": 2.0, "infinite": False, "n": 20, "d": 10},

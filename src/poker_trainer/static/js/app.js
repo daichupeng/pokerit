@@ -7,6 +7,37 @@
   // fetched profile object for instant header rendering.
   const state = { user: null, bootstrapped: false };
 
+  const EVIDENCE_TYPE_LABELS = {
+    engine_state: "Recorded hand",
+    deterministic_calculation: "Exact math",
+    deterministic_statistics: "Recorded stats",
+    heuristic_inference: "AI strategy judgment",
+    simulation_metadata: "Bot preset style",
+    range_knowledge_base: "Preflop range chart",
+    preflop_strategy_api: "Preflop strategy API",
+    solver_node: "Solver result",
+  };
+
+  function evidenceSourceChip(source) {
+    const type = source.type || "unknown";
+    const fallback = titleCase(type.replace(/_/g, " "));
+    const label = EVIDENCE_TYPE_LABELS[type] || fallback;
+    const sourceId = source.pack_id || (
+      source.type === "preflop_strategy_api" && source.version
+        ? `${source.provider || "PokerAI"} ${source.version}`
+        : ""
+    );
+    const suffix = sourceId ? ` · ${sourceId}` : "";
+    const detail = source.label || label;
+    return `<span class="eval-evidence-chip" title="${escapeHTML(detail)}">` +
+      `${escapeHTML(label + suffix)}</span>`;
+  }
+
+  function evidenceSourceList(sources) {
+    return (sources || []).map(evidenceSourceChip)
+      .join('<span class="eval-evidence-separator" aria-hidden="true">·</span>');
+  }
+
   function screen(id) {
     const tpl = document.getElementById("screen-" + id);
     app.innerHTML = "";
@@ -304,11 +335,35 @@
     if (isDiscarded) {
       html += `<div class="eval-discarded-banner"><span>This evaluation is discarded and excluded from your coaching profile.</span></div>`;
     }
+    const gameHands = (((full.stats_snapshot || {}).game_level || {}).hands_dealt);
+    if (gameHands !== undefined && gameHands !== null) {
+      html += `<div class="eval-threshold-meta">Current game · ${gameHands} hand${gameHands === 1 ? "" : "s"}</div>`;
+    }
     const thresholdMeta = (full.report && full.report.threshold_profile)
       || (full.stats_snapshot && full.stats_snapshot.threshold_profile)
       || {};
-    if (thresholdMeta.key || thresholdMeta.version) {
+    if ((thresholdMeta.key || "").startsWith("custom_")) {
+      html += `<p class="muted">Custom statistics are descriptive; no calibrated statistical leak benchmark is applied.</p>`;
+    } else if (thresholdMeta.key || thresholdMeta.version) {
       html += `<div class="eval-threshold-meta">Leak thresholds: ${thresholdMeta.key || "unknown"} · ${thresholdMeta.version || "unversioned"}</div>`;
+    }
+    const preflopMeta = (full.report && full.report.preflop_evidence) || {};
+    const preflopAttempted = Number(preflopMeta.attempted || 0);
+    const preflopResolved = Number(preflopMeta.resolved || 0);
+    if (preflopAttempted > 0) {
+      const apiSource = preflopResolved > 0
+        ? evidenceSourceList([{
+            type: "preflop_strategy_api",
+            provider: "PokerAI",
+            version: preflopMeta.version,
+            label: "PokerAI presolved preflop evidence used for selected decisions",
+          }])
+        : "PokerAI";
+      const fallbackCount = preflopAttempted - preflopResolved;
+      const fallbackText = fallbackCount > 0
+        ? ` · ${fallbackCount} fallback analysis` : "";
+      html += `<div class="eval-threshold-meta">Preflop evidence: ${apiSource} · ` +
+        `${preflopResolved}/${preflopAttempted} resolved${fallbackText}</div>`;
     }
     const sampleMetrics = (((full.stats_snapshot || {}).sample_status || {}).metrics || []);
     const insufficient = sampleMetrics.filter((metric) => metric.status === "insufficient_sample");
@@ -332,16 +387,12 @@
         ? `<span class="eval-profile-status ${s.profile_status}">${PROFILE_STATUS_LABEL[s.profile_status] || s.profile_status}</span>`
         : "";
       const isDisputed = disputedTags.has(s.tag);
-      const sectionSources = (s.evidence_sources || []).map((source) =>
-        `<span class="eval-evidence-chip">${escapeHTML((source.type || "unknown").replace(/_/g, " "))}</span>`
-      ).join("");
+      const sectionSources = evidenceSourceList(s.evidence_sources);
       const examples = (s.examples || []).map((example) => {
         const round = example.round_count;
         const plan = example.future_plan
           ? `<div><strong>Future plan:</strong> ${escapeHTML(example.future_plan)}</div>` : "";
-        const sources = (example.evidence_sources || []).map((source) =>
-          `<span class="eval-evidence-chip">${escapeHTML((source.type || "unknown").replace(/_/g, " "))}${source.pack_id ? ` · ${escapeHTML(source.pack_id)}` : ""}</span>`
-        ).join("");
+        const sources = evidenceSourceList(example.evidence_sources);
         return `<article class="eval-example">
           <div class="eval-example-head">
             <button class="eval-citation-chip" data-round="${round}">Hand #${round}</button>
@@ -352,7 +403,7 @@
           <div><strong>Better line:</strong> ${escapeHTML(example.better_line || "")}</div>
           <div><strong>Why:</strong> ${escapeHTML(example.why || "")}</div>
           ${plan}
-          ${sources ? `<div class="eval-evidence"><strong>Evidence:</strong> ${sources}</div>` : ""}
+          ${sources ? `<div class="eval-evidence"><strong>Based on:</strong> ${sources}</div>` : ""}
         </article>`;
       }).join("");
       html += `<div class="eval-section-card">
@@ -362,7 +413,7 @@
           ${profileBadge}
         </div>
         <p>${escapeHTML(s.narrative || "")}</p>
-        ${sectionSources ? `<div class="eval-evidence"><strong>Evidence:</strong> ${sectionSources}</div>` : ""}
+        ${sectionSources ? `<div class="eval-evidence"><strong>Based on:</strong> ${sectionSources}</div>` : ""}
         ${examples ? `<div class="eval-examples">${examples}</div>` : `<div class="eval-citations">${citations}</div>`}
         <div class="eval-section-foot">
           <button class="eval-dispute-btn${isDisputed ? " disputed" : ""}" data-tag="${s.tag}">
@@ -605,9 +656,10 @@
     html += streetBlock("Turn", d.streets.turn);
     html += streetBlock("River", d.streets.river);
 
-    // Showdown: revealed cards + hand values.
-    if (d.had_showdown && d.showdown_hands && d.showdown_hands.length) {
-      const sdRows = d.showdown_hands.map(sh => {
+    // Showdown: known cards + hand values, with unrevealed live hands marked
+    // explicitly as mucked rather than silently disappearing from the result.
+    if (d.had_showdown) {
+      const shownRows = (d.showdown_hands || []).map(sh => {
         const winTag = sh.is_winner
           ? ` <span class="win">wins ${sh.amount_won.toLocaleString()}</span>` : "";
         return `<li>
@@ -615,7 +667,12 @@
           ${cardsHTML(sh.hole_cards)}
           <span class="hand-label">${sh.hand_label}</span>${winTag}
         </li>`;
-      }).join("");
+      });
+      const muckedRows = (d.mucked_players || []).map(p => `<li>
+        ${pnameHTML(p.name, p.is_hero, p.position)}:
+        <span class="showdown-status mucked">MUCKED</span>
+      </li>`);
+      const sdRows = shownRows.concat(muckedRows).join("");
       // Final pot breakdown.
       const fp = d.final_pot || {};
       const mainAmt = (fp.main || {}).amount || d.pot_total;
@@ -624,7 +681,7 @@
         potLine += ` · Side pot ${i + 1}: ${sp.amount.toLocaleString()}`;
       });
       html += `<div class="street"><h3>Showdown</h3>` +
-        `<ul class="hand-players showdown-list">${sdRows}</ul>` +
+        `<ul class="hand-players showdown-list">${sdRows || '<li class="muted">No cards shown</li>'}</ul>` +
         `<p class="muted tiny pot-summary">${potLine}</p></div>`;
     }
 
@@ -721,7 +778,7 @@
         buy_in: +$("cfg-buyin").value,
         ante: +ante.value,
         ante_type: anteType.value,
-        max_round: clamp(+$("cfg-rounds").value, 1, 500),
+        max_round: clamp(+$("cfg-rounds").value, 1, 100),
         randomize_styles: random.checked,
         hide_styles: $("cfg-hide").checked,
         styles,
@@ -786,6 +843,8 @@
     $("pf-language").value = p.language || "";
     $("pf-avatar-url").value = p.avatar_url || "";
     const shortcuts = (p.preferences || {}).bet_shortcuts_v1 || {};
+    $("pf-showdown-visibility").value =
+      (p.preferences || {}).showdown_visibility_v1 || "realistic";
     const preflopRows = $("pf-preflop-rows"), postflopRows = $("pf-postflop-rows");
     (shortcuts.preflop || [2, 2.5, 6, 7.5]).forEach((v) => addQuickChip(preflopRows, v, "× BB"));
     (shortcuts.postflop || [33, 50, 65, 100]).forEach((v) => addQuickChip(postflopRows, v, "% Pot"));
@@ -808,6 +867,7 @@
             preflop: readQuickChips(preflopRows),
             postflop: readQuickChips(postflopRows),
           },
+          showdown_visibility_v1: $("pf-showdown-visibility").value,
         },
       };
       try {
@@ -993,7 +1053,7 @@
         <td>${historyMetricValue(latestNode)}</td>
         <td>${historyMetricValue(baselineNode)}</td>
         <td>${historyMetricValue(rollingNode)}</td>
-        <td>${sample.observed}/${sample.required}</td>
+        <td>${sample.required == null ? sample.observed : `${sample.observed}/${sample.required}`}</td>
         <td class="history-trend ${trend}">${escapeHTML(titleCase(trend.replace(/_/g, " ")))}</td>
       </tr>`;
     }).join("");
@@ -1001,12 +1061,12 @@
     const leakHTML = leaks.length
       ? `<div class="history-numeric-leaks">${leaks.map((leak) =>
           `<span class="eval-tag">${escapeHTML(titleCase(leak.tag.replace(/_/g, " ")))}</span>`).join("")}</div>`
-      : `<p class="muted tiny">No rolling numeric leaks passed both threshold and sample requirements.</p>`;
+      : `<p class="muted tiny">${(full.threshold_profile || "").startsWith("custom_") ? "Custom statistics are descriptive; no calibrated statistical leak benchmark is applied." : "No rolling numeric leaks passed both threshold and sample requirements."}</p>`;
     target.innerHTML = `
       <div class="history-window-meta tiny">
-        Scope: ${escapeHTML(full.scope)} · ${windowMeta.hands_used || 0} rolling hands across ${full.games_included || 0} games ·
+        Scope: ${escapeHTML(full.scope_label || full.scope)} · ${windowMeta.hands_used || 0} rolling hands across ${full.games_included || 0} games ·
         latest game ${windowMeta.latest_game_hands || 0} hands · prior baseline ${windowMeta.prior_baseline_hands || 0} hands ·
-        thresholds ${escapeHTML(full.threshold_profile)} ${escapeHTML(full.threshold_version)}
+        ${(full.threshold_profile || "").startsWith("custom_") ? "Custom scope · descriptive statistics" : `thresholds ${escapeHTML(full.threshold_profile)} ${escapeHTML(full.threshold_version)}`}
       </div>
       <div class="history-report-summary">${escapeHTML((full.report || {}).summary || "")}</div>
       ${leakHTML}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from shared_services.decision_facts import build_hand_facts, format_hand_facts
+
 _STREET_LABELS = {
     "preflop": "Preflop",
     "flop": "Flop",
@@ -64,13 +66,18 @@ def _action_line(a: dict) -> str:
     who = f"{base} ({pos}){context}" if pos else f"{base}{context}"
     amt = a.get("amount") or 0
     allin = " (ALL IN)" if a.get("is_allin") else ""
-    action = a["action"]
+    action = a.get("canonical_action") or a["action"]
     if action == "fold":
         return f"{who} folds"
+    if action == "bet":
+        return f"{who} bets {a.get('amount_paid', amt)}{allin}"
     if action == "raise":
-        return f"{who} raises to {amt}{allin}"
+        return f"{who} raises to {a.get('amount_to', amt)}{allin}"
     if action == "call":
-        return f"{who} calls {amt}{allin}" if amt > 0 else f"{who} checks"
+        paid = a.get("amount_paid", amt)
+        return f"{who} calls {paid}{allin}" if paid > 0 else f"{who} checks"
+    if action == "check":
+        return f"{who} checks"
     if action == "smallblind":
         return f"{who} posts small blind {amt}"
     if action == "bigblind":
@@ -138,6 +145,8 @@ def format_hand(hand: dict, game_sb: int, game_bb: int) -> str:
         board = st.get("board", [])
         if board:
             lines.append(f"Cards dealt: {_cards(board)}")
+            if hero_cards:
+                lines.extend(format_hand_facts(build_hand_facts(hero_cards, board)))
 
         # Pot.
         pot = st.get("pot", {})

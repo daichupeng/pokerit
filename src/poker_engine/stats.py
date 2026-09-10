@@ -37,9 +37,18 @@ class RawStatCounts:
     hands_dealt: int = 0
     vpip_hands: int = 0
     pfr_hands: int = 0
+    # ``limp_hands`` is the backwards-compatible total.  The exclusive
+    # sub-counters below keep strategically different entries separate.
     limp_hands: int = 0
+    open_limp_hands: int = 0
+    over_limp_hands: int = 0
+    sb_complete_hands: int = 0
     three_bet_opportunities: int = 0
     three_bet_hands: int = 0
+    squeeze_opportunities: int = 0
+    squeeze_hands: int = 0
+    limp_reraise_opportunities: int = 0
+    limp_reraise_hands: int = 0
     faced_3bet_after_raise: int = 0
     folded_to_3bet: int = 0
 
@@ -190,6 +199,124 @@ def _hand_actions_by_street(hand: Hand) -> dict[str, list[Action]]:
     return by_street
 
 
+@dataclass(frozen=True)
+class _PreflopClassification:
+    """Exclusive limp type plus re-raise opportunities for one hero hand."""
+
+    limp_kind: str | None = None
+    limp_action: str | None = None
+    three_bet_opportunity: bool = False
+    three_bet_taken: bool = False
+    three_bet_action: str | None = None
+    squeeze_opportunity: bool = False
+    squeeze_taken: bool = False
+    limp_reraise_opportunity: bool = False
+    limp_reraise_taken: bool = False
+    limp_reraise_action: str | None = None
+
+
+def _classify_preflop(hand: Hand, game_player_id) -> _PreflopClassification:
+    """Classify preflop entries without conflating SB completes and back-raises.
+
+    A standard 3-bet opportunity is the hero's *first* voluntary decision
+    facing exactly one raise.  If the hero already limped and action returns
+    after an isolation raise, that is recorded separately as a limp-reraise
+    opportunity.  A squeeze is the standard-opportunity subset with at least
+    one cold caller between the first raise and the hero's decision.
+    """
+    hero_hp = next((hp for hp in hand.players if hp.game_player_id == game_player_id), None)
+    if hero_hp is None:
+        return _PreflopClassification()
+
+    preflop = _hand_actions_by_street(hand)["preflop"]
+    raises_seen = 0
+    limpers_seen = 0
+    callers_after_raise = 0
+    hero_decision_seen = False
+    hero_limped = False
+    values: dict[str, object] = {}
+
+    for act in preflop:
+        is_hero = act.game_player_id == game_player_id
+        is_decision = act.action in {"fold", "call", "raise"}
+
+        if is_hero and is_decision:
+            if not hero_decision_seen:
+                if raises_seen == 1:
+                    values["three_bet_opportunity"] = True
+                    values["three_bet_action"] = act.action
+                    values["three_bet_taken"] = act.action == "raise"
+                    if callers_after_raise:
+                        values["squeeze_opportunity"] = True
+                        values["squeeze_taken"] = act.action == "raise"
+                elif raises_seen == 0 and _is_positive_call(act):
+                    hero_limped = True
+                    values["limp_action"] = act.action
+                    if hero_hp.position == "SB":
+                        values["limp_kind"] = "sb_complete"
+                    elif limpers_seen:
+                        values["limp_kind"] = "over_limp"
+                    else:
+                        values["limp_kind"] = "open_limp"
+                hero_decision_seen = True
+            elif hero_limped and raises_seen == 1:
+                values["limp_reraise_opportunity"] = True
+                values["limp_reraise_action"] = act.action
+                values["limp_reraise_taken"] = act.action == "raise"
+
+        if act.action == "raise":
+            raises_seen += 1
+            if raises_seen == 1:
+                callers_after_raise = 0
+        elif _is_positive_call(act):
+            if raises_seen == 0:
+                limpers_seen += 1
+            elif raises_seen == 1 and not is_hero:
+                callers_after_raise += 1
+
+    return _PreflopClassification(**values)
+
+
+def preflop_event_evidence(hands: list[Hand], game_player_id) -> dict[str, list[dict]]:
+    """Return auditable per-hand provenance for preflop frequency counters."""
+    events = {
+        "open_limp": [],
+        "over_limp": [],
+        "sb_complete": [],
+        "three_bet_opportunity": [],
+        "squeeze_opportunity": [],
+        "limp_reraise_opportunity": [],
+    }
+    for hand in hands:
+        hero_hp = next((hp for hp in hand.players if hp.game_player_id == game_player_id), None)
+        if hero_hp is None:
+            continue
+        classified = _classify_preflop(hand, game_player_id)
+        base = {
+            "hand_id": str(hand.id) if getattr(hand, "id", None) is not None else None,
+            "round_count": getattr(hand, "round_count", None),
+            "position": hero_hp.position,
+        }
+        if classified.limp_kind:
+            events[classified.limp_kind].append({**base, "action": classified.limp_action})
+        if classified.three_bet_opportunity:
+            events["three_bet_opportunity"].append({
+                **base, "action": classified.three_bet_action,
+                "taken": classified.three_bet_taken,
+            })
+        if classified.squeeze_opportunity:
+            events["squeeze_opportunity"].append({
+                **base, "action": classified.three_bet_action,
+                "taken": classified.squeeze_taken,
+            })
+        if classified.limp_reraise_opportunity:
+            events["limp_reraise_opportunity"].append({
+                **base, "action": classified.limp_reraise_action,
+                "taken": classified.limp_reraise_taken,
+            })
+    return events
+
+
 def compute_hand_stats(hand: Hand, game_player_id) -> RawStatCounts:
     """Compute raw counts for one hero seat in one hand.
 
@@ -213,30 +340,18 @@ def compute_hand_stats(hand: Hand, game_player_id) -> RawStatCounts:
         counts.vpip_hands = 1
     if any(a.action == "raise" for a in hero_preflop):
         counts.pfr_hands = 1
-    raises_before_action = 0
-    for action in preflop:
-        if action.game_player_id == game_player_id and _is_positive_call(action) \
-                and raises_before_action == 0:
-            counts.limp_hands = 1
-            break
-        if action.action == "raise":
-            raises_before_action += 1
+    classified = _classify_preflop(hand, game_player_id)
+    if classified.limp_kind:
+        counts.limp_hands = 1
+        setattr(counts, f"{classified.limp_kind}_hands", 1)
+    counts.three_bet_opportunities = int(classified.three_bet_opportunity)
+    counts.three_bet_hands = int(classified.three_bet_taken)
+    counts.squeeze_opportunities = int(classified.squeeze_opportunity)
+    counts.squeeze_hands = int(classified.squeeze_taken)
+    counts.limp_reraise_opportunities = int(classified.limp_reraise_opportunity)
+    counts.limp_reraise_hands = int(classified.limp_reraise_taken)
 
-    # -- 3-bet opportunity / hit / fold-to-3bet -----------------------------
-    # A 3-bet opportunity only exists at an actual hero decision with exactly
-    # one raise already made.  This excludes raises after hero folded and cold
-    # 4-bet spots where two raises already precede hero.
-    raises_seen = 0
-    for act in preflop:
-        if act.game_player_id == game_player_id:
-            if act.action in {"fold", "call", "raise"} and raises_seen == 1:
-                counts.three_bet_opportunities = 1
-                if act.action == "raise":
-                    counts.three_bet_hands = 1
-            if act.action == "raise":
-                raises_seen += 1
-        elif act.action == "raise":
-            raises_seen += 1
+    # -- fold-to-3bet --------------------------------------------------------
 
     # Fold-to-3bet applies only when hero made the first raise and then had an
     # actual response to the second raise.  Folding a 3-bet to a 4-bet is not
@@ -430,8 +545,16 @@ def to_display(counts: RawStatCounts) -> dict:
         "hands_dealt": counts.hands_dealt,
         "vpip": _pct(counts.vpip_hands, counts.hands_dealt),
         "pfr": _pct(counts.pfr_hands, counts.hands_dealt),
+        # Backwards-compatible total plus strategically distinct components.
         "limp": _pct(counts.limp_hands, counts.hands_dealt),
+        "open_limp": _pct(counts.open_limp_hands, counts.hands_dealt),
+        "over_limp": _pct(counts.over_limp_hands, counts.hands_dealt),
+        "sb_complete": _pct(counts.sb_complete_hands, counts.hands_dealt),
         "three_bet": _pct(counts.three_bet_hands, counts.three_bet_opportunities),
+        "squeeze": _pct(counts.squeeze_hands, counts.squeeze_opportunities),
+        "limp_reraise": _pct(
+            counts.limp_reraise_hands, counts.limp_reraise_opportunities,
+        ),
         "fold_to_3bet": _pct(counts.folded_to_3bet, counts.faced_3bet_after_raise),
         "open_shove": _pct(counts.open_shove_hands, counts.open_shove_opportunities),
         "reshove": _pct(counts.reshove_hands, counts.reshove_opportunities),

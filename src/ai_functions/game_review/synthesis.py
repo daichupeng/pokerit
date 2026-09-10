@@ -40,6 +40,8 @@ _AGGRESSION_CLAIM_RE = re.compile(
     r"aggression factor|\bAF\b|aggressive actions?|passive actions?",
     re.IGNORECASE,
 )
+_THREE_BET_TAGS = frozenset({"under_3bet", "over_3bet"})
+_VPIP_TAGS = frozenset({"low_vpip", "high_vpip"})
 
 SYSTEM_PROMPT = """\
 You are a poker coaching synthesis agent. You are given, as pinned context, \
@@ -48,6 +50,11 @@ of already-identified leak tags (each with its severity and citations or \
 evidence already computed). Your job is to write the coaching report.
 
 Rules you MUST follow:
+- Preflop API frequencies describe a fixed pack, not the actual stack depth.
+  Preserve supplied effective-stack comparisons and depth caveats in findings.
+  Directional depth adjustments are AI strategy judgment, not solver output;
+  never invent corrected frequencies or EV errors, or force a bias direction
+  when uncertain. Depth mismatch alone does not establish a mistake.
 - Every numeric claim in your narrative (a percentage, a count, a chip \
 amount) must come directly from the pinned context or from a tool result you \
 obtained in this conversation. Never state a number you did not get from one \
@@ -66,11 +73,26 @@ by the pinned leak tags; only add narrative text.
   Add a future-street plan when useful. A hand number by itself is not an
   explanation. Stat sections may omit examples because one hand cannot prove a
   game-level frequency leak.
+- A judgment leak's `citations` may be a deterministic representative subset.
+  `total_citations` is the full audited count and `evidence.occurrences_per_50`
+  is the session-length-normalized rate. Do not describe the representative
+  subset as the full count, and prefer examples with complete decision fields.
 - This report evaluates only the current game. Describe its findings as
   current-game observations, never as rolling-history conclusions. A metric
   marked insufficient sample must not be implied to be a leak.
+- For VPIP, never claim knowledge of the player pool. Severity 2 means only
+  slightly outside the configured reference, not definitively "too loose" or
+  "too tight". Distinguish overall VPIP from table-size segments.
 - A percentage whose denominator is zero is undefined, not 0%. Never describe
   a 0/0 metric as success, failure, passivity, aggression, or showdown output.
+- `three_bet` has one exact definition: the hero's first voluntary preflop
+  decision facing exactly one raise. A decision after the hero already limped
+  is a separate `limp_reraise` opportunity and is never part of `three_bet`.
+  A frequency flag does not prove that every individual fold or call should
+  have been a 3-bet.
+- `open_limp` means a non-SB first-in limp divided by hands dealt. `limp` is
+  the descriptive total; `over_limp` and `sb_complete` are separate and must
+  not be used as evidence for `limps_too_wide`.
 - Postflop aggression factor has one exact definition here:
   (postflop bets + raises) / postflop calls. For an aggression leak's evidence,
   `bets_raises` is the numerator and `calls` is the denominator. Checks and
@@ -126,6 +148,75 @@ def _aggression_evidence_for_context(leak: dict) -> dict:
     return enriched
 
 
+_REPRESENTATIVE_CITATION_LIMIT = 5
+_CONFIDENCE_SCORE = {"high": 2, "medium": 1, "low": 0}
+_CITATION_EXPLANATION_FIELDS = ("hero_action", "issue", "better_line", "why")
+
+
+def _citation_quality(citation: dict) -> tuple[int, int]:
+    confidence = _CONFIDENCE_SCORE.get(
+        str(citation.get("confidence", "")).strip().lower(), -1,
+    )
+    completeness = sum(bool(citation.get(field)) for field in _CITATION_EXPLANATION_FIELDS)
+    return confidence, completeness
+
+
+def _representative_citations(citations: list[dict], limit: int = _REPRESENTATIVE_CITATION_LIMIT) -> list[dict]:
+    """Choose high-quality examples spread across the session timeline.
+
+    Full citations remain stored on the evaluation. This smaller deterministic
+    view is only for the synthesis prompt, preventing 100-hand sessions from
+    overwhelming the model with repetitive examples.
+    """
+    deduped: dict[tuple, dict] = {}
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        key = (
+            citation.get("hand_id"), citation.get("round_count"), citation.get("street"),
+        )
+        current = deduped.get(key)
+        if current is None or _citation_quality(citation) > _citation_quality(current):
+            deduped[key] = citation
+    ordered = sorted(
+        deduped.values(),
+        key=lambda citation: (
+            citation.get("round_count") is None,
+            citation.get("round_count") or 0,
+            str(citation.get("street") or ""),
+        ),
+    )
+    if len(ordered) <= limit:
+        return [dict(citation) for citation in ordered]
+
+    representatives = []
+    for bucket_index in range(limit):
+        start = bucket_index * len(ordered) // limit
+        end = (bucket_index + 1) * len(ordered) // limit
+        bucket = ordered[start:end]
+        best = max(
+            bucket,
+            key=lambda citation: (
+                *_citation_quality(citation),
+                -(citation.get("round_count") or 0),
+            ),
+        )
+        representatives.append(dict(best))
+    return representatives
+
+
+def _leak_for_synthesis_context(leak: dict) -> dict:
+    """Return a prompt-sized copy while preserving the full stored finding."""
+    enriched = _aggression_evidence_for_context(leak)
+    if leak.get("kind") != "judgment":
+        return enriched
+    citations = [citation for citation in leak.get("citations") or [] if isinstance(citation, dict)]
+    enriched["total_citations"] = len(citations)
+    enriched["citations"] = _representative_citations(citations)
+    enriched["representative_citations"] = len(enriched["citations"])
+    return enriched
+
+
 def _canonical_aggression_sentence(leak: dict) -> str:
     evidence = leak.get("evidence") or {}
     bets_raises = int(evidence.get("n", 0) or 0)
@@ -160,6 +251,69 @@ def _guard_summary_aggression_claims(summary: str) -> str:
     ).strip()
 
 
+def _pct_text(node: dict) -> str:
+    value = node.get("pct")
+    return "undefined" if value is None else f"{value}%"
+
+
+def _canonical_three_bet_sentence(section: dict) -> str:
+    evidence = section.get("evidence") or {}
+    n, d = int(evidence.get("n", 0) or 0), int(evidence.get("d", 0) or 0)
+    node = {"pct": evidence.get("pct")}
+    limp_reraise = evidence.get("limp_reraise") or {}
+    lr_n = int(limp_reraise.get("n", 0) or 0)
+    lr_d = int(limp_reraise.get("d", 0) or 0)
+    return (
+        f"Standard 3-bet frequency is {_pct_text(node)} ({n}/{d}); this counts "
+        "only the hero's first voluntary decision facing exactly one raise. "
+        f"Limp-reraise decisions are tracked separately at {lr_n}/{lr_d}. "
+        "This is a session-level frequency flag, not proof that every fold or "
+        "call in the denominator should have been a 3-bet."
+    )
+
+
+def _canonical_open_limp_sentence(section: dict) -> str:
+    evidence = section.get("evidence") or {}
+    n, d = int(evidence.get("n", 0) or 0), int(evidence.get("d", 0) or 0)
+    node = {"pct": evidence.get("pct")}
+    total = evidence.get("total_limp") or {}
+    over = evidence.get("over_limp") or {}
+    sb = evidence.get("sb_complete") or {}
+    return (
+        f"Non-SB open-limp frequency is {_pct_text(node)} ({n}/{d} hands). "
+        f"Total limps were {int(total.get('n', n) or 0)}/{int(total.get('d', d) or 0)}, "
+        f"including {int(over.get('n', 0) or 0)} over-limps and "
+        f"{int(sb.get('n', 0) or 0)} SB completions; those two categories do "
+        "not trigger this leak tag."
+    )
+
+
+def _canonical_vpip_sentence(section: dict) -> str:
+    evidence = section.get("evidence") or {}
+    session = evidence.get("session_vpip") or evidence
+    n = int(session.get("n", evidence.get("n", 0)) or 0)
+    d = int(session.get("d", evidence.get("d", 0)) or 0)
+    pct = session.get("pct", evidence.get("pct"))
+    direction = "above" if section.get("tag") == "high_vpip" else "below"
+    degree = "slightly" if int(section.get("severity", 0) or 0) == 2 else "clearly"
+    returning = "Returning signal: " if section.get("profile_status") == "returning" else ""
+    parts = [
+        f"{returning}overall VPIP is {_pct_text({'pct': pct})} ({n}/{d} hands).",
+        f"That is {degree} {direction} the configured reference for the recorded table sizes.",
+    ]
+    segments = evidence.get("segments") or []
+    if segments:
+        split = "; ".join(
+            f"{int(segment.get('table_size', 0))}-max "
+            f"{_pct_text(segment)} ({int(segment.get('n', 0) or 0)}/"
+            f"{int(segment.get('d', 0) or 0)})"
+            for segment in segments
+        )
+        parts.append(f"By players dealt: {split}.")
+    parts.append("This is a recorded-session benchmark comparison, not a player-pool read.")
+    return " ".join(parts)
+
+
 def normalize_report_evidence(report: dict | None) -> dict | None:
     """Apply deterministic evidence wording to new and already-saved reports."""
     if not isinstance(report, dict):
@@ -173,6 +327,15 @@ def normalize_report_evidence(report: dict | None) -> dict | None:
             section["narrative"] = _guard_aggression_narrative(
                 section.get("narrative", ""), section,
             )
+        elif section.get("tag") in _THREE_BET_TAGS \
+                and (section.get("evidence") or {}).get("definition") \
+                == "first voluntary hero decision facing exactly one raise":
+            section["narrative"] = _canonical_three_bet_sentence(section)
+        elif section.get("tag") == "limps_too_wide" \
+                and (section.get("evidence") or {}).get("stat") == "open_limp":
+            section["narrative"] = _canonical_open_limp_sentence(section)
+        elif section.get("tag") in _VPIP_TAGS:
+            section["narrative"] = _canonical_vpip_sentence(section)
         sections.append(section)
     normalized["sections"] = sections
     return normalized
@@ -301,7 +464,7 @@ async def run_synthesis(
     profile_status_by_tag = profile_status_by_tag or {}
     leak_tags_for_context = []
     for leak in leak_tags:
-        enriched = _aggression_evidence_for_context(leak)
+        enriched = _leak_for_synthesis_context(leak)
         if leak["tag"] in profile_status_by_tag:
             enriched["profile_status"] = profile_status_by_tag[leak["tag"]]
         leak_tags_for_context.append(enriched)

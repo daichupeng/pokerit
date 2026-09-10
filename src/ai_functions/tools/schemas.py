@@ -69,6 +69,82 @@ EQUITY_CALCULATOR_SCHEMA = {
     },
 }
 
+RANGE_EQUITY_CALCULATOR_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "range_equity_calculator",
+        "description": (
+            "Calculate exact heads-up postflop equity for Hero's code-bound live "
+            "cards against one to three explicit weighted villain-range scenarios. "
+            "Hero cards and board are not model-settable. Range assumptions are "
+            "recorded as assumptions, not observed facts or solver output."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "villain_ranges": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {
+                                "type": "string",
+                                "description": (
+                                    "Neutral assumption label; do not claim a solver, "
+                                    "GTO, PokerAI, or other provider source."
+                                ),
+                            },
+                            "hands": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 60,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "hand": {
+                                            "type": "string",
+                                            "description": (
+                                                "One exact combo (AsKh) or class "
+                                                "(AA, AKs, AKo, AK). No + or interval syntax."
+                                            ),
+                                        },
+                                        "weight": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                            "maximum": 1,
+                                            "description": "Optional per-combo weight; defaults to 1.",
+                                        },
+                                    },
+                                    "required": ["hand"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["label", "hands"],
+                        "additionalProperties": False,
+                    },
+                },
+                "board_street": {
+                    "type": "string",
+                    "enum": ["current", "flop", "turn", "river"],
+                    "default": "current",
+                    "description": (
+                        "Use current unless the user explicitly asks for an earlier "
+                        "street. This selects a code-owned board prefix; it never "
+                        "allows card values to be supplied or changed."
+                    ),
+                },
+            },
+            "required": ["villain_ranges"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+IN_GAME_COACH_TOOL_SCHEMAS = [RANGE_EQUITY_CALCULATOR_SCHEMA]
+
 STATS_QUERY_SCHEMA = {
     "type": "function",
     "function": {

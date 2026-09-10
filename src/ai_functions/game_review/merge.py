@@ -1,15 +1,18 @@
 """Pure merge of street-agent judgment findings with stat-derived leaks.
 
-No LLM involvement. Judgment-tag severity is purely a function of citation
-count across the whole game (``leak_taxonomy.severity_for_judgment_count``);
-stat-tag severity/evidence come straight from ``detect_stat_leaks``.
+No LLM involvement. Judgment-tag severity is a per-50-hand normalized citation
+rate (preserving the original bands for sessions up to 50 hands); stat-tag
+severity/evidence come straight from ``detect_stat_leaks``.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-from ai_functions.game_review.leak_taxonomy import severity_for_judgment_count
+from ai_functions.game_review.leak_taxonomy import (
+    judgment_occurrences_per_50,
+    severity_for_judgment_count,
+)
 from ai_functions.game_review.stat_leaks import detect_stat_leaks
 
 
@@ -45,12 +48,21 @@ def merge_findings(
                     citation[key] = value
             by_tag[finding["tag"]].append(citation)
 
+    hands_dealt = int(stats_display.get("hands_dealt", 0) or 0)
     judgment_tags = [
         {
             "tag": tag,
             "kind": "judgment",
-            "severity": severity_for_judgment_count(len(citations)),
+            "severity": severity_for_judgment_count(len(citations), hands_dealt),
             "citations": citations,
+            "evidence": {
+                "occurrences": len(citations),
+                "hands_dealt": hands_dealt,
+                "occurrences_per_50": judgment_occurrences_per_50(
+                    len(citations), hands_dealt,
+                ),
+                "severity_basis": "judgment occurrences normalized to 50 hands",
+            },
         }
         for tag, citations in by_tag.items()
     ]
